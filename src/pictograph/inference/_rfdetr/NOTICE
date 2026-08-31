@@ -1,0 +1,71 @@
+Pictograph SDK - vendored RF-DETR architecture
+==============================================
+
+This directory contains source code derived from RF-DETR, redistributed under the
+Apache License, Version 2.0. The full licence text is in ./LICENSE.
+
+Origin
+------
+    Project:  RF-DETR
+    Version:  1.8.3   (PyPI: rfdetr==1.8.3)
+    Upstream: https://github.com/roboflow/rf-detr
+    Copyright (c) 2025 Roboflow. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+
+RF-DETR itself carries earlier notices, reproduced here because they travel with
+the files that derive from that work:
+
+    Copied from LW-DETR (https://github.com/Atten4Vis/LW-DETR)
+        Copyright (c) 2024 Baidu. All Rights Reserved.
+    Copied from Conditional DETR (https://github.com/Atten4Vis/ConditionalDETR)
+        Copyright (c) 2021 Microsoft. All Rights Reserved.
+    Copied from DETR (https://github.com/facebookresearch/detr)
+        Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+    Copied from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
+        Copyright (c) 2020 SenseTime. All Rights Reserved.
+    Modified from HuggingFace Transformers (https://github.com/huggingface/transformers)
+        Copyright 2022-2024 The HuggingFace Team / Meta Inc. All rights reserved.
+        Licensed under the Apache License, Version 2.0.
+
+NOTICE OF MODIFICATION (Apache-2.0 section 4b)
+----------------------------------------------
+The files in this directory have been modified by Pictograph. Each modified file
+carries a header stating so. The changes are:
+
+1.  Imports rewritten from `rfdetr.*` onto `pictograph.inference._rfdetr.*`.
+
+2.  The `transformers` base classes and helpers used by the DINOv2 backbone
+    (`PreTrainedModel`, `PretrainedConfig`, `BackboneMixin`, `BackboneConfigMixin`,
+    `ACT2FN`, `torch_int`, `prune_linear_layer`, the `ModelOutput` dataclasses and
+    the documentation decorators) are replaced by equivalent implementations in
+    `_compat.py`, so that `transformers` is not required to rebuild the
+    architecture. `_compat.py` is original Pictograph work, not derived from
+    `transformers`.
+
+3.  Training-only code is removed: `build_criterion_and_postprocessors` and
+    `build_criterion_from_config` in `models/lwdetr.py`, together with their
+    `models/criterion.py` and `models/matcher.py` imports; and the two
+    `torch.jit.script`-compiled loss twins in `utilities/box_ops.py`
+    (`batch_dice_loss_jit`, `batch_sigmoid_ce_loss_jit`), whose only caller was
+    `models/matcher.py`.
+
+4.  `assets/model_weights.py` is replaced by a local stub that asserts the
+    checkpoint exists rather than downloading it from a remote asset registry.
+    That file is original Pictograph work.
+
+5.  `pyDeprecate` decorators are removed: the deprecated `build_namespace` shim in
+    `_namespace.py` (which had no internal callers) is deleted, and the
+    `@deprecated` wrapper on `load_pretrain_weights` in `models/weights.py`, which
+    warned only about an argument no caller here passes, is dropped.
+
+6.  `transformers.AutoBackbone` in `models/backbone/dinov2.py` is imported lazily
+    inside the non-windowed branch, which a checkpoint reload never takes.
+
+7.  `builder.py` is original Pictograph work. It transcribes the checkpoint
+    resolution rules of `rfdetr.detr.RFDETR.from_checkpoint`, the model assembly of
+    `rfdetr.inference._build_model_context`, and the inference pipeline of
+    `rfdetr.detr.RFDETR.predict`, and returns a plain record in place of a
+    `supervision.Detections`.
+
+No file in this directory has been altered in a way that changes the numerical
+behaviour of the model it builds.
