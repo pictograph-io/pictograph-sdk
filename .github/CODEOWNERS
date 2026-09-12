@@ -1,0 +1,11 @@
+# Every file in this repository is owned by the Pictograph maintainers.
+#
+# The branch ruleset on the default branch requires an approving review from a
+# code owner, so this file is what makes "a maintainer has to sign off" binding
+# rather than advisory. A pull request cannot land without it.
+#
+# A team is named here rather than an individual account on purpose: it keeps a
+# personal handle out of the public tree, and membership can change without a
+# commit.
+
+* @pictograph-io/maintainers
