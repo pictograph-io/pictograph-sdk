@@ -1,0 +1,620 @@
+[build-system]
+requires = ["hatchling>=1.21"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pictograph"
+dynamic = ["version"]
+description = "Pictograph SDK - agent-native computer vision annotation platform"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Pictograph", email = "support@pictograph.io" }]
+keywords = [
+    "computer-vision",
+    "annotation",
+    "labeling",
+    "dataset",
+    "machine-learning",
+    "ai",
+    "agents",
+    "claude",
+    "openai",
+    "sam3",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Scientific/Engineering :: Image Recognition",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Typing :: Typed",
+]
+dependencies = [
+    "httpx[http2]>=0.27,<1.0",
+    "pydantic>=2.5,<3.0",
+    "pydantic-settings>=2.0,<3.0",
+    "typing-extensions>=4.10",
+    # Pillow is used to extract image dimensions client-side during upload, so
+    # the backend doesn't have to re-read every byte. Optional in spirit
+    # (uploads work without it via height/width=None), but keeping it as a
+    # base dep matches the CV-SDK target audience.
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+agents = [
+    "anthropic>=0.40",
+    "claude-agent-sdk>=0.0.1",
+    "openai-agents>=0.0.7",
+]
+cli = [
+    "typer>=0.12",
+    "rich>=13.7",
+    # tomllib is stdlib on 3.11+; tomli is the back-compat for 3.10.
+    "tomli>=2.0; python_version<'3.11'",
+]
+torch = [
+    # Powers Datasets.as_pytorch(); Pillow is already a base dep. Heavy + only
+    # needed by callers feeding a training loop, so it's opt-in.
+    #
+    # NOTE this is NOT the extra to install in order to RUN a .pth - [inference]
+    # is, and it is a strict superset of this list. This one stays because
+    # `Datasets.as_pytorch()` feeds a torch DataLoader without needing an ONNX
+    # runtime, OpenCV or scikit-image, and asking a training-loop user to install
+    # all of those would be the same laziness in the other direction.
+    "torch>=2.0",
+    # get_model(format="safetensors") reads a model's safetensors artifact.
+    # Some pipelines publish no .pth at all (rfdetr_keypoint publishes ONNX +
+    # safetensors only, so the whole keypoint family is torch-loadable ONLY
+    # through that format).
+    "safetensors>=0.4",
+    # Every native-PyTorch family needs it: torchvision.models rebuilds a
+    # classifier, and the vendored RF-DETR architecture uses `transforms.functional`
+    # for its predict pipeline plus `ops.box_area`. It was already a hard
+    # requirement of the classification path and simply went undeclared, so
+    # `pip install "pictograph[torch]"` did not actually suffice to run a .pth.
+    "torchvision>=0.15",
+]
+inference = [
+    # Local inference: `pictograph.get_model(...).predict(...)` and
+    # `client.models.load(...)`. Runs your trained models on your own machine,
+    # CPU everywhere. For GPU, install `onnxruntime-gpu` instead of onnxruntime.
+    #
+    # ── THIS EXTRA IS COMPLETE FOR EVERY WEIGHTS FORMAT IT COVERS ──
+    # `pip install "pictograph[inference]"` runs `format="onnx"`, `"pytorch"` AND
+    # `"safetensors"` for all six model families, with NO second pip command.
+    # That is a deliberate product requirement, not a convenience: the install
+    # snippet in the app's Use-Model panel used to append
+    # `pip install torch segmentation-models-pytorch` (and, for YOLOX, a
+    # `git+https://…` line) beneath the SDK install, which is us shipping our own
+    # undeclared dependencies as the user's homework. Anything a published model
+    # needs in order to load is declared HERE or vendored into the wheel.
+    #
+    # NOTE onnxruntime is required by EVERY graph runtime, not just the ONNX one.
+    # The vendored wrappers own all six families' pre/postprocess and import ORT at
+    # module scope; ExecuTorch and TensorRT reuse them and substitute only the
+    # forward pass (see inference/_engine.py). That sharing is what makes the
+    # runtimes numerically equivalent, so the dependency is deliberate.
+    "onnxruntime>=1.17",
+    # Graph introspection (input-shape truth over the training_config guess -
+    # a model stored with a minimal config otherwise mis-sizes its inputs).
+    "onnx>=1.16",
+    "opencv-python-headless>=4.8",
+    "numpy>=1.24",
+    "scikit-image>=0.22",
+    # ── the native-container (.pth / .safetensors) half ──
+    # Everything in the [torch] extra, restated rather than referenced so that
+    # `[inference]` is self-contained: torch rebuilds and runs the module,
+    # torchvision supplies the classification backbones plus the transforms and
+    # `ops.box_area` the vendored RF-DETR predict path uses, and safetensors
+    # reads the container the keypoint family publishes INSTEAD of a .pth.
+    "torch>=2.0",
+    "torchvision>=0.15",
+    "safetensors>=0.4",
+    # PINNED, not floored - and pinned to the same version the Pictograph
+    # training pipeline uses (`segmentation-models-pytorch==0.5.0`). This
+    # package DEFINES AN
+    # ARCHITECTURE: a .pth is a mapping from layer NAME to tensor, and
+    # `_torch.py::_build_smp` strict-loads it into `smp.Segformer(...)` /
+    # `smp.Unet(...)` rebuilt from this very code. A floor would let pip install
+    # a release whose module tree renames or re-nests a single submodule, and
+    # the strict load then fails - or, worse, succeeds against a silently
+    # different block. Bump only in LOCKSTEP with the training image, and only
+    # after re-running a published semantic-segmentation .pth through it.
+    "segmentation-models-pytorch==0.5.0",
+]
+executorch = [
+    # Runs a model's `.pte` - PyTorch's edge runtime. Pair with [inference]:
+    # `pip install "pictograph[inference,executorch]"`.
+    #
+    # ── WHY THIS IS NOT FOLDED INTO [inference] (measured 2026-07-31) ──
+    # It is the one thing that genuinely cannot be, and the reason is the pin
+    # two lines below: `torch>=2.12,<2.13`. Folding this in would impose that
+    # exact torch minor on EVERY local-inference user, including the ONNX-only
+    # majority - and the models themselves are trained on torch 2.5.1, so the
+    # common case would be forced onto a torch it has no need for. The other two
+    # costs are smaller but real: executorch's own metadata pulls a test-harness
+    # grab-bag (`expecttest`, `hypothesis`, `kgb`, `parameterized`,
+    # `pandas>=2.2.2`, `mpmath==1.3.0`, `pytorch-tokenizers`) plus a hard
+    # `numpy>=2.0.0`, and the wheel is ~15 MB per platform.
+    #
+    # Keeping it separate costs nothing at the call site: the intersection
+    # `torch>=2.0` (from [inference]) ∩ `torch>=2.12,<2.13` (here) is non-empty,
+    # so `pictograph[inference,executorch]` resolves cleanly - it is still ONE
+    # `pictograph[...]` install line, which is the actual requirement.
+    #
+    # BOTH bounds are load-bearing, and a floor alone is not enough. ExecuTorch's
+    # prebuilt runtime extension is compiled against ONE torch ABI, but its own
+    # metadata declares only a FLOOR (1.3.1 says `torch>=2.12.0a0`, with no
+    # ceiling). So an unbounded `torch>=2.9` here let the resolver pair
+    # executorch 1.3.1 with torch 2.13.0 - every constraint satisfied, and the
+    # runtime then dies on import:
+    #
+    #     ImportError: dlopen(.../executorch/extension/pybindings/_portable_lib…so):
+    #       Symbol not found: __ZN3c104impl3cow23materialize_cow_storageERNS_11StorageImplE
+    #       Expected in: .../torch/lib/libc10.dylib
+    #
+    # i.e. the precise failure the previous comment here set out to prevent - it
+    # reasoned correctly that a mismatched torch "imports fine and then fails to
+    # dlopen with a missing C++ symbol", but only stated the floor, and the
+    # break is on the CEILING side. Measured on a clean venv (macOS arm64,
+    # py3.12) while validating the ExecuTorch inference path; `torch==2.12.*`
+    # fixes it.
+    #
+    # The pair below is the one actually validated end to end: `.pte` artifacts
+    # BUILT by the platform with executorch 1.0.1 load and run correctly on this
+    # runtime (17/17 classification models, agreeing with their ONNX to ~4e-07).
+    # That is the forward-compat the `.pte` schema promises - a NEWER runtime
+    # reads an OLDER program - so a user is never forced onto the builder's
+    # exact version. It is also why `.pte` artifacts are built in their own
+    # isolated environment rather than the training one, pinned at torch 2.5.1.
+    #
+    # To bump: move both bounds together, then re-run the load-and-predict check
+    # against an already-published `.pte`. Never widen `torch` alone.
+    "executorch>=1.3,<1.4",
+    "torch>=2.12,<2.13",
+]
+tensorrt = [
+    # Runs a model's `.engine` - NVIDIA only, and only on the GPU architecture and
+    # TensorRT version the plan was BUILT for. 10.x on purpose: it still supports
+    # Turing (sm75), which is the cheapest tier we build engines for. Pair with
+    # [inference]: `pip install "pictograph[inference,tensorrt]"` (torch comes
+    # from [inference] and supplies the CUDA device buffers).
+    #
+    # ── WHY THIS IS NOT FOLDED INTO [inference] (measured 2026-07-31) ──
+    # `tensorrt` on PyPI is an sdist-only META package (the 11.2.1.2 release is a
+    # ~9 KB tarball whose entire content is a dependency on `tensorrt_cu13`),
+    # which then resolves NVIDIA's CUDA-specific binary distributions. There is
+    # no macOS build and no CPU build. Folding it into [inference] would make
+    # `pip install "pictograph[inference]"` fail outright on every machine
+    # without a CUDA stack - i.e. it would break the ONNX-on-a-laptop path,
+    # which is the most common one there is. Same conclusion as executorch, for
+    # a harder reason: this one is not a preference, it is unsatisfiable.
+    "tensorrt>=10.0,<11",
+]
+all = [
+    "pictograph[agents,cli,inference]",
+]
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-httpx>=0.30",
+    "hypothesis>=6.100",
+    "vcrpy>=6.0",
+    # PINNED, not floored. `ruff format` output changes between minor versions -
+    # 0.16 began formatting Python code blocks inside markdown, which silently
+    # turned 5 long-untouched skill docs into a RED `ruff format --check` in CI
+    # while every local venv on 0.15 reported clean. CI installs from this file
+    # unpinned, so local and CI were running different formatters. Same reasoning
+    # as pinning any other build tool: a formatter is a build
+    # input, and an unpinned one makes the gate non-deterministic across machines.
+    # Bumping is DELIBERATE: raise the pin, run `ruff format`, commit the result.
+    "ruff==0.16.0",
+    "mypy>=1.10",
+]
+
+[project.urls]
+Homepage = "https://pictograph.io"
+Documentation = "https://pictograph.io/docs"
+Repository = "https://github.com/pictograph-io/pictograph-sdk"
+Changelog = "https://github.com/pictograph-io/pictograph-sdk/blob/main/CHANGELOG.md"
+Issues = "https://github.com/pictograph-io/pictograph-sdk/issues"
+
+[project.scripts]
+pictograph = "pictograph.cli._app:main"
+
+# ────────── hatch ──────────
+
+[tool.hatch.version]
+path = "src/pictograph/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pictograph"]
+# Hatch's package glob ships all .py files by default; ``artifacts`` adds the
+# Claude Skill's markdown + script files (anything non-.py needs to be
+# explicitly listed). Wildcards apply relative to the wheel root.
+artifacts = [
+    "src/pictograph/skills/pictograph-cv/SKILL.md",
+    "src/pictograph/skills/pictograph-cv/references/*.md",
+    "src/pictograph/skills/pictograph-cv/scripts/*.py",
+    "src/pictograph/py.typed",
+    # The vendored RF-DETR architecture. The DINOv2 configs are READ AT BUILD TIME
+    # by `models/backbone/dinov2.py`, so a wheel without them cannot rebuild a
+    # model; LICENSE + NOTICE are what Apache-2.0 requires us to redistribute.
+    "src/pictograph/inference/_rfdetr/models/backbone/dinov2_configs/*.json",
+    "src/pictograph/inference/_rfdetr/LICENSE",
+    "src/pictograph/inference/_rfdetr/NOTICE",
+    # The vendored YOLOX architecture. LICENSE + NOTICE are what Apache-2.0
+    # requires us to redistribute; the .py files ride the package glob.
+    "src/pictograph/inference/_yolox/LICENSE",
+    "src/pictograph/inference/_yolox/NOTICE",
+]
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/pictograph",
+    "tests",
+    "examples",
+    "README.md",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE",
+]
+# Mirror of the wheel's `artifacts`. Hatchling starts from VCS file selection, so
+# anything .gitignore excludes is dropped unless re-included here - and `include`
+# above does NOT override an ignore. A stray unanchored `scripts/` rule in
+# .gitignore silently emptied the bundled skill's script directory from the
+# published 1.69.64 wheel and sdist for exactly this reason, while the CI wheel
+# check still reported the skill bundled because it only looked for SKILL.md.
+# Keep this list identical to the wheel target's.
+artifacts = [
+    "src/pictograph/skills/pictograph-cv/SKILL.md",
+    "src/pictograph/skills/pictograph-cv/references/*.md",
+    "src/pictograph/skills/pictograph-cv/scripts/*.py",
+    "src/pictograph/py.typed",
+    "src/pictograph/inference/_rfdetr/models/backbone/dinov2_configs/*.json",
+    "src/pictograph/inference/_rfdetr/LICENSE",
+    "src/pictograph/inference/_rfdetr/NOTICE",
+    "src/pictograph/inference/_yolox/LICENSE",
+    "src/pictograph/inference/_yolox/NOTICE",
+]
+
+# ────────── ruff ──────────
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+# Bundled Skill scripts are agent-facing documentation-as-code, not SDK source.
+# Users invoke them in their own environments, not the SDK's quality gate.
+#
+# The RF-DETR architecture vendored from rfdetr 1.8.3 is excluded for a different
+# reason: it is a THIRD-PARTY verbatim copy, and its value is that it can be
+# diffed against the upstream release we pin. Autoformatting or refactoring it to
+# our house style destroys that, and the tree is re-vendored wholesale rather than
+# edited. Only the upstream-derived paths are listed - `_rfdetr/__init__.py`,
+# `_compat.py`, `builder.py` and `assets/` are Pictograph originals and stay in
+# the gate. (Contrast `inference/_wrappers/*`, which is OUR OWN code copied from
+# the backend and therefore lints with only style carve-outs, below.)
+extend-exclude = [
+    "src/pictograph/skills/*/scripts",
+    "src/pictograph/inference/_rfdetr/config.py",
+    "src/pictograph/inference/_rfdetr/_namespace.py",
+    "src/pictograph/inference/_rfdetr/models",
+    "src/pictograph/inference/_rfdetr/utilities",
+    # Same reasoning for the YOLOX architecture vendored from commit 6ddff48:
+    # a verbatim third-party copy whose value is that it diffs clean against the
+    # mirrored upstream tarball. `_yolox/__init__.py` is Pictograph original and
+    # stays in the gate; the six upstream modules and the gathered
+    # `_upstream_utils.py` are excluded.
+    "src/pictograph/inference/_yolox/darknet.py",
+    "src/pictograph/inference/_yolox/losses.py",
+    "src/pictograph/inference/_yolox/network_blocks.py",
+    "src/pictograph/inference/_yolox/yolo_head.py",
+    "src/pictograph/inference/_yolox/yolo_pafpn.py",
+    "src/pictograph/inference/_yolox/yolox.py",
+    "src/pictograph/inference/_yolox/_upstream_utils.py",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "UP",     # pyupgrade
+    "SIM",    # flake8-simplify
+    "RUF",    # ruff-specific
+    "TCH",    # flake8-type-checking
+    "N",      # pep8-naming
+    "S",      # flake8-bandit
+    "PT",     # flake8-pytest-style
+    "PTH",    # flake8-use-pathlib
+    "C4",     # flake8-comprehensions
+    "ARG",    # flake8-unused-arguments
+    "RET",    # flake8-return
+    "ERA",    # eradicate (commented-out code)
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "B008",   # function calls in argument defaults are common in Pydantic Field()
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+    "S101",   # assert is fine in tests
+    "ARG001", # unused fixture args
+    "PT011",  # broad pytest.raises is sometimes intentional
+    "S301",   # pickle round-trip tests use trusted input
+    "S311",   # non-cryptographic random in tests is fine
+    "SIM300", # `assert actual == expected` is the standard test ordering
+    "TC001",  # tests often need types at runtime in fixtures/helpers
+    "TC002",
+    "TC003",
+    "RUF002", # docstring ambiguity warnings (×, em-dash, etc.) - too noisy for prose
+    "B017",   # broad pytest.raises(Exception) is sometimes the right answer
+    # Live tests (tests/live/**) hit a real API and follow conventions that
+    # would be wrong in src/ but are fine in test setup/teardown.
+    "S110",   # `try/except: pass` in test cleanup - intentional silent best-effort
+    "SIM105", # use contextlib.suppress() instead of try/except/pass - cosmetic
+    "SIM117", # combine nested `with` blocks - cosmetic
+    "F841",   # unused locals are sometimes deliberate ("did this side effect fire?")
+    "N814",   # `from PIL import Image as _PIL` aliasing pattern
+    "PT006",  # parametrize naming style - cosmetic
+    "PT018",  # split composite `assert a and b` into two - cosmetic
+    "RUF059", # unused unpacked variable (`images, _ = call()`)
+    "S108",   # hardcoded temp paths in tests are fixture paths, not user input
+    "S603",   # `subprocess.run([...])` in tests calls ffmpeg etc. - trusted args
+    "S607",   # partial executable path (e.g. "ffmpeg") - relies on PATH, fine here
+]
+"src/pictograph/__init__.py" = ["F401"]  # re-exports
+# Pydantic models need runtime types for field declarations and validators;
+# TC001/TC002/TC003 (move-into-TYPE_CHECKING-block) is wrong for these files.
+"src/pictograph/models/**" = ["TC001", "TC002", "TC003"]
+# Typer commands use Path/etc. as runtime defaults in `Annotated` parameters;
+# moving them into TYPE_CHECKING breaks the CLI at startup.
+"src/pictograph/cli/commands/**" = ["TC001", "TC002", "TC003"]
+# Tool-handler isinstance asserts are the canonical mypy/pyright type-narrowing
+# pattern; the toolkit dispatcher always passes the right model by construction.
+"src/pictograph/agents/_registry.py" = ["S101"]
+# Vendored ONNX inference wrappers - copied from the backend's canonical
+# inference_wrappers/ and kept faithful by scripts/sync_inference_wrappers.sh
+# (which reformats + safe-autofixes them) plus the parity test. They pass
+# `ruff format` and every correctness rule (F/E/undefined-name/unused-import);
+# the residual ignores below are style/refactor rules that would force the
+# vendored copy to diverge from its upstream source. NOT excluded from linting.
+"src/pictograph/inference/_wrappers/*" = [
+    "B006",   # mutable default (providers=[...]) - always overridden by the SDK
+    "RUF013", # implicit Optional (t: X = None) in the upstream signatures
+    "ERA001", # commented-out reference code carried from the source
+    "ARG001", # unused args - the wrappers share a uniform call interface
+    "ARG002",
+    "B905",   # zip() without strict=
+    "B007",   # unused loop control variable
+    "RET504", # assign-before-return - kept for source readability
+    "RUF046", # unnecessary int() cast - leave the source's explicit casts
+    "RUF059", # unused unpacked variable
+    "SIM108", # ternary vs if/else - source style
+    "SIM102", # collapsible if - source style
+    "S101",   # assert
+    "RUF003", # ambiguous unicode character in a comment
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["pictograph"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+
+# ────────── mypy ──────────
+
+[tool.mypy]
+python_version = "3.10"
+plugins = ["pydantic.mypy"]
+strict = true
+# Bundled Skill scripts are agent-facing documentation-as-code, run in the
+# user's environment with their own dependency surface - exclude from strict.
+exclude = ["src/pictograph/skills/.*/scripts"]
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_no_return = true
+warn_return_any = true
+warn_unreachable = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+no_implicit_optional = true
+strict_equality = true
+extra_checks = true
+
+[[tool.mypy.overrides]]
+# Optional / extras-gated imports mypy can't always resolve. `agents` is the
+# import name for the `openai-agents` PyPI package; `claude_agent_sdk` is the
+# Anthropic SDK; only enabled via the [agents] extra. `aiosqlite` and `vcr`
+# were previously listed but aren't imported from src/pictograph/ - re-add
+# if cache/test deps move into src.
+#
+# `tomli` is the back-compat dep for Python <3.11 (3.11+ uses stdlib `tomllib`).
+# It's installed conditionally via the [cli] extras (`tomli>=2.0; python_version<'3.11'`),
+# so mypy on CI's 3.12 runtime can't resolve it even though the branch using
+# tomli is itself guarded by `sys.version_info >= (3, 11)`. Skip the import
+# check entirely - the runtime guard already proves the import is safe.
+module = ["agents.*", "claude_agent_sdk.*", "tomli"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `torch` is only installed via the [torch] extra (Datasets.as_pytorch); the
+# mypy gate doesn't install it. `_torch_dataset.py` is a map-style dataset (no
+# torch subclassing), so treating torch as untyped here keeps the strict gate
+# torch-free without any per-line type: ignores.
+module = ["torch.*", "torchvision.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The [inference] extra deps are untyped / not installed in the strict gate.
+# `executorch` ships no py.typed and `tensorrt` is NVIDIA-only (so it is never
+# installed on the machine running the gate at all) - both are reached only
+# through the `_require_*` helpers, which raise a typed ImportError.
+module = [
+    "cv2.*",
+    "onnxruntime.*",
+    "skimage.*",
+    "numpy",
+    "numpy.*",
+    "executorch.*",
+    "tensorrt.*",
+]
+ignore_missing_imports = true
+# `ignore_missing_imports` only covers the ABSENT case. When a developer follows
+# our own README and installs `pictograph[inference]`, these packages are present
+# and mypy parses their stubs against `python_version = "3.10"` - numpy 2.5's
+# `__init__.pyi` uses a 3.12 `type` statement, so the gate died with a syntax
+# error in a dependency and checked nothing (`errors prevented further
+# checking`). Skipping the follow keeps the result identical whether or not the
+# extra is installed, which is the only way this gate means the same thing on
+# CI and on a machine that can actually run the inference tests.
+#
+# `follow_imports_for_stubs` is required alongside it: numpy ships its types as
+# `__init__.pyi`, and mypy ignores `follow_imports` for stub files unless this is
+# set - which is why skipping alone changed nothing.
+follow_imports = "skip"
+follow_imports_for_stubs = true
+
+[[tool.mypy.overrides]]
+# The vendored ONNX wrappers (pictograph.inference._wrappers) are copied VERBATIM
+# from the backend's canonical inference_wrappers/ - do not strict-type them here
+# (the sync script + parity test keep them faithful to the source instead).
+module = ["pictograph.inference._wrappers.*"]
+ignore_errors = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# The RF-DETR architecture vendored from rfdetr 1.8.3 - verbatim third-party
+# source, re-vendored rather than edited, so strict-typing it would mean
+# maintaining a permanent local diff against the release we pin. The Pictograph
+# originals in that package (`__init__`, `_compat`, `builder`, `assets`) are NOT
+# listed here and are strict-typed like the rest of the SDK.
+module = [
+    "pictograph.inference._rfdetr.config",
+    "pictograph.inference._rfdetr._namespace",
+    "pictograph.inference._rfdetr.models.*",
+    "pictograph.inference._rfdetr.utilities.*",
+    # Ditto the YOLOX architecture vendored from commit 6ddff48. Untyped
+    # upstream source; `_yolox/__init__.py` is Pictograph original and is NOT
+    # listed here, so it is strict-typed like the rest of the SDK.
+    "pictograph.inference._yolox.darknet",
+    "pictograph.inference._yolox.losses",
+    "pictograph.inference._yolox.network_blocks",
+    "pictograph.inference._yolox.yolo_head",
+    "pictograph.inference._yolox.yolo_pafpn",
+    "pictograph.inference._yolox.yolox",
+    "pictograph.inference._yolox._upstream_utils",
+]
+ignore_errors = true
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# `_yolox/__init__.py` is Pictograph original and stays strict - EXCEPT for this
+# one rule. It is the single boundary that calls into the vendored tree, and
+# upstream YOLOX carries no annotations at all (`def __init__(self, depth, width,
+# ...)`), so every `YOLOPAFPN(...)` / `YOLOXHead(...)` / `YOLOX(...)` construction
+# is a "call to untyped function in typed context". Silencing it here, on the
+# three-line function that does it, is narrower than either annotating a
+# third-party tree we re-vendor wholesale or scattering per-call ignores.
+module = ["pictograph.inference._yolox"]
+disallow_untyped_calls = false
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ────────── pytest ──────────
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--showlocals",
+    "--tb=short",
+    # Money guard: `live` and `e2e` hit production and spend real credits, so a
+    # bare `pytest` must never reach them. This was documented as true long
+    # before it was: without this line all 105 live tests were collected, and
+    # they ran for anyone who happened to have an API key exported.
+    # An explicit CLI `-m` overrides this, which is how you opt in:
+    #   PICTOGRAPH_TEST_KEY=pk_live_... pytest tests/live/ -m live
+    "-m",
+    "not live and not e2e",
+]
+markers = [
+    "e2e: end-to-end tests requiring PICTOGRAPH_TEST_KEY (deselect by default)",
+    "live: live integration tests hitting real API - require PICTOGRAPH_TEST_KEY",
+    "credits: consumes credit balance (SAM3, training, etc.)",
+    "training: spawns a remote GPU training run (multi-minute, credit-heavy)",
+    "slow: long-running tests (deselect with -m 'not slow')",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning:vcr.*",
+]
+
+# ────────── coverage ──────────
+
+[tool.coverage.run]
+source = ["src/pictograph"]
+branch = true
+omit = [
+    "src/pictograph/_version.py",
+    "src/pictograph/cli/*",
+    "src/pictograph/skills/*",
+    # Local-inference feature (added in 1.8.0) - only runnable with the heavy
+    # optional extras (onnxruntime / opencv / numpy / torch), which the base CI
+    # gate deliberately does NOT install (test_inference.py `importorskip`s them).
+    # Measuring their coverage in the base gate just penalizes it for code it
+    # can't execute - same rationale as the cli/* + skills/* omits above:
+    #   * inference/_wrappers/* are VENDORED copies of the backend's canonical
+    #     modal/inference_wrappers/ (coverage lives at the source; structure is
+    #     guarded by test_inference_wrappers_parity.py).
+    #   * inference/__init__.py + _torch_dataset.py build/run ONNX + torch, so the
+    #     base gate can only reach their pure-python helpers.
+    # (When the extras ARE installed, test_inference.py exercises them for real.)
+    "src/pictograph/inference/*",
+    "src/pictograph/_torch_dataset.py",
+]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    "@overload",
+    "\\.\\.\\.",
+]
