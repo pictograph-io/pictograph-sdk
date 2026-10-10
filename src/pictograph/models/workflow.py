@@ -1,0 +1,146 @@
+"""Workflow Pydantic models - node-graph pipelines and their runs.
+
+"Workflow" means exactly one thing in this SDK: the graph-editor feature modelled
+here - a saved DAG (source → model → filter → track → measure → sink) run over an
+image, video, or dataset, accessed via ``client.workflows``.
+"""
+
+from __future__ import annotations
+
+from datetime import datetime
+from typing import Any, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+WorkflowStatus = Literal["draft", "ready", "archived"]
+WorkflowRunStatus = Literal["queued", "processing", "completed", "error", "cancelled"]
+
+
+class Workflow(BaseModel):
+    """A saved node-graph workflow."""
+
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    id: str
+    organization_id: str
+    name: str
+    description: str | None = None
+    graph: dict[str, Any] = Field(default_factory=dict)
+    template_key: str | None = None
+    status: WorkflowStatus = "draft"
+    last_run_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class WorkflowRun(BaseModel):
+    """One execution of a workflow over a source."""
+
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    id: str
+    organization_id: str
+    workflow_id: str
+    status: WorkflowRunStatus
+    progress: float = 0.0
+    frames_total: int | None = None
+    frames_done: int = 0
+    sample_fps: float | None = None
+    step_results: dict[str, Any] = Field(default_factory=dict)
+    # B473 - per condition node {passed, failed, combinator, rules}: how an if/else
+    # condition split the run. Empty when the graph has no condition node.
+    condition_results: dict[str, Any] = Field(default_factory=dict)
+    artifacts: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    # Un-charged pre-run estimate (µUSD); the settled charge is ``final_micro_usd``
+    # once the run completes (charge-on-success from measured GPU time).
+    deposit_micro_usd: int = 0
+    final_micro_usd: int | None = None
+    error: str | None = None
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class WorkflowRunSummary(BaseModel):
+    """A slim row from ``client.workflows.list_runs`` - the run-LIST projection.
+
+    This is what a run looks like in a listing: status, progress, frame counts, a
+    single settled/estimated ``cost_micro_usd``, and the artifact COUNT. It
+    deliberately omits the bulky ``step_results`` and the per-artifact download
+    URLs - call :meth:`~pictograph.resources.workflows.Workflows.get_run` for a
+    single run's full :class:`WorkflowRun` record (including signed artifact
+    downloads).
+    """
+
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    id: str
+    status: WorkflowRunStatus
+    created_at: datetime | None = None
+    completed_at: datetime | None = None
+    # Wall-clock seconds from created_at to completed_at, when both are known.
+    runtime_seconds: float | None = None
+    # The SETTLED measured charge (µUSD) once terminal (``cost_settled`` True),
+    # else the un-charged pre-run estimate. Workflows bill once, on success.
+    cost_micro_usd: int = 0
+    cost_settled: bool = False
+    frames_done: int = 0
+    frames_total: int | None = None
+    progress: float = 0.0
+    artifact_count: int = 0
+    error: str | None = None
+
+
+class WorkflowRunCreated(BaseModel):
+    """Run response - the new run id + ``deposit_micro_usd``, which is the
+    un-charged pre-run ESTIMATE. Workflows bill ONCE, on success, from measured GPU
+    time; a failed or cancelled run is free. The field name is kept for wire-compat."""
+
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    run_id: str
+    # Un-charged pre-run estimate (µUSD). The settled charge lands on the run's
+    # ``final_micro_usd`` once it completes; see :class:`WorkflowRun`.
+    deposit_micro_usd: int = 0
+    # A relative URL to poll for this run (returned by the on-demand ``invoke``
+    # endpoint; absent from the plain ``run`` response).
+    status_url: str | None = None
+
+
+WorkflowInvokeKind = Literal["dataset", "video", "image"]
+
+
+class WorkflowInvokeSource(BaseModel):
+    """A source OVERRIDE for :meth:`~pictograph.resources.workflows.Workflows.invoke`.
+
+    Runs a SAVED workflow over a source supplied AT CALL TIME, without touching the
+    workflow's stored source node. Discriminated on ``kind``:
+
+    - ``"dataset"``: a dataset (``dataset`` = its name or uuid) in your organization,
+      optionally narrowed to one ``directory_path`` (absent = the whole dataset).
+    - ``"video"`` / ``"image"``: a ``gcs_uri`` you own (the storage URI returned by
+      the normal image/video upload flow), under your org's prefix. ``sample_fps`` and
+      ``duration_seconds`` apply to ``"video"`` only.
+
+    ``extra="forbid"`` so a mistyped field is caught locally rather than silently
+    dropped into an empty override (which would run the workflow's own source).
+    """
+
+    model_config = ConfigDict(extra="forbid", protected_namespaces=())
+
+    kind: WorkflowInvokeKind
+    dataset: str | None = None
+    directory_path: str | None = None
+    gcs_uri: str | None = None
+    sample_fps: float | None = None
+    duration_seconds: float | None = None
+
+
+class WorkflowUploadInfo(BaseModel):
+    """Response from the workflow source upload-url endpoint (WF-D local-file mode):
+    a signed PUT URL and the ``gcs_uri`` the media will live at once uploaded."""
+
+    model_config = ConfigDict(extra="ignore", protected_namespaces=())
+
+    upload_url: str
+    gcs_uri: str
