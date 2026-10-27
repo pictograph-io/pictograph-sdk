@@ -1,0 +1,27 @@
+{
+  "name": "pictograph",
+  "description": "Pictograph for Claude Code: real-time vision tools for agents. Label images with SAM3, train detection, segmentation and keypoint models, deploy them as GPU endpoints, stream live video to them, and call your models as tools.",
+  "owner": {
+    "name": "Pictograph",
+    "email": "support@pictograph.io",
+    "url": "https://pictograph.io"
+  },
+  "plugins": [
+    {
+      "name": "pictograph",
+      "displayName": "Pictograph",
+      "source": "./src/pictograph",
+      "description": "Teaches Claude Code the Pictograph CLI and Python SDK: upload and label image datasets, draft labels with SAM3, train RF-DETR, YOLOX and Segformer models, deploy them as TensorRT GPU endpoints, stream RTSP or WebRTC video to them, and run trained models as tools.",
+      "author": {
+        "name": "Pictograph",
+        "email": "support@pictograph.io",
+        "url": "https://pictograph.io"
+      },
+      "homepage": "https://pictograph.io/docs/agents",
+      "repository": "https://github.com/pictograph-io/pictograph-sdk",
+      "license": "MIT",
+      "keywords": ["computer-vision", "object-detection", "segmentation", "sam3", "rf-detr", "real-time", "video", "annotation", "training", "inference"],
+      "category": "development"
+    }
+  ]
+}
