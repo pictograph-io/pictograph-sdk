@@ -1,0 +1,2356 @@
+# Changelog
+
+All notable changes to the Pictograph Python SDK are documented here.
+
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project uses conservative [Semantic Versioning](https://semver.org/):
+ordinary changes bump the **patch** version; a genuinely substantial new
+capability bumps the **minor** version.
+
+## [1.69.169]
+
+### Added
+- **Imports that write each image once.** `images.bulk_upload(..., annotations=[...])` takes each
+  file's annotations (one list per file, in `file_paths` order) and the API writes them in the same
+  insert that registers the image - a register and then `annotations.bulk_save` wrote every image
+  twice. If a server registers the images without them (one that predates the field), the call
+  raises instead of reporting success.
+- **Embeddings at your own pace.** `images.bulk_upload(..., embed=False)` registers images without
+  starting the SigLIP embedding / auto-tag pass; `datasets.backfill_embeddings(dataset, limit=500)`
+  queues it for up to 500 images that have none and reports `queued` / `missing` / `remaining`
+  (`EmbeddingBackfill`). A large import embeds in steps the database absorbs. Sync and async alike.
+
+## [1.69.168]
+
+### Fixed
+- **An upload survives a storage hiccup.** The PUT of an image's bytes to its signed storage URL
+  (every `images.upload`, `images.bulk_upload`, `images.upload_from_directory`, video and workflow
+  source upload) made one attempt: a single transient answer from object storage (a 503 "slow
+  down", a 429, a 5xx, a dropped connection) failed the whole batch. It now retries under the same
+  policy as every API call (exponential backoff with jitter, `max_retries`), re-sending the whole
+  file each time; a refusal such as 403 is never retried. Sync and async alike.
+
+## [1.69.167]
+
+### Fixed
+- **A polygon in pieces is one annotation.** `PolygonGeometry` said an object with disconnected
+  regions must be sent as separate annotations. The platform stores it the other way: one
+  annotation whose `paths` holds every ring, filled even-odd, so a ring inside another is a hole and
+  a ring outside the others is another piece of the same object (a car cut in two by a pole). That is
+  how COCO's multi-part objects and A2D2's instances are stored, and how training and every export
+  read them. The docstring, the `paths` field description and the bundled skill now say so. No
+  behaviour changed.
+
+## [1.69.166]
+
+### Changed
+- **A classifier's badges: every class over its threshold, read at a glance.**
+  `draw_annotations(image, classification=result)` draws each of its classes at or over the new
+  `min_confidence` (default `0.5`, the platform's default threshold) as a badge, best first, stacked
+  in the image's top-left corner - not just the top class whatever its score: a classifier always
+  reports its best class, and a weak model's 2% guess is no label. `min_confidence=0` draws every
+  class it reports. The badge is sized from the image, its words about 2% of the longer side tall
+  (font 2.75%, at least 15 px), as the platform's live views and the app draw it - it was 1.5x
+  `font_size`, a speck on a large image. `viz.CORNER_LABEL_SCALE` is gone; `CORNER_LABEL_FONT_SHARE`,
+  `CORNER_LABEL_MIN_FONT` and `DEFAULT_MIN_CONFIDENCE` name the new rule.
+
+## [1.69.165]
+
+### Added
+- **A classifier's output draws.** `draw_annotations(image, classification=result)` draws a
+  classifier's top class as a badge in the image's top-left corner, inset 1.5% of its shorter side
+  (at least 8 px) and 1.5x a label's size, the way a deployment's live view and a workflow's
+  annotated video draw it. It takes a `ClassificationResult`, one `ClassScore` or a
+  `{"name", "confidence"}` mapping, or several (one per classifier: they stack, each class once), and
+  follows `show_labels` / `show_confidence` like every label. `annotations` is now optional, so a
+  classifier's result draws alone. A classifier had no way to be drawn before: its result has no
+  geometry, so it is not an annotation.
+
+## [1.69.164]
+
+### Added
+- **Whether a deployment or a workflow's endpoint has a log now.** `Deployment.logged` and
+  `WorkflowEndpoint.logged`: its current deployment's log exists (each deploy logs anew, and a pause
+  ends it). With none - a workflow's draft never deployed, a paused deployment - `live_log` /
+  `live_log_summary` raise `NotFoundError` (`no_log`), so check `logged` first. `None` from a server
+  that does not say.
+
+## [1.69.163]
+
+### Added
+- **A workflow's streams are its runs.** Each stream session on a workflow's endpoint (the app's Test
+  tab, `client.workflows.connect(...).open_stream`, an RTSP camera) is now one of its runs: it is in
+  `list_runs` / `iter_runs` beside its video, image, dataset and export runs, processing while it
+  streams and completed (or failed, with why) once it ends, with its frames read from its log. Every
+  run says what it ran over: `WorkflowRunSource` on `WorkflowRun.source` and
+  `WorkflowRunSummary.source` (`kind`: `"video"`, `"image"`, `"dataset"`, `"export"` or `"stream"`;
+  a stream's `via`: `"whip"`, `"rtsp"` or `"whep"`), with a stream's session in `stream_session`.
+  `list_runs(..., kind="stream")` / `kind="file"` (and `iter_runs`, sync and async) keep one or the
+  other; `pictograph workflows runs --kind stream` too, and its table has a `source` column.
+  `client.workflows.cancel_run` on a stream's run stops the stream. Older answers read as `None`.
+
+## [1.69.162]
+
+### Added
+- **Where a deployment serves when its region has no GPU free.** A request or a stream that finds no
+  GPU free in a deployment's region for 30 seconds is now offered the rest of the US too, and served
+  wherever a GPU is found first (its requests still enter in its region; billed at its rate). The SDK
+  reads it: `Deployment.region_fallback` and `WorkflowEndpoint.region_fallback` (it does this - every
+  deployment once it has been deployed since), `DeploymentRuntime.fallback` (of `containers`, those
+  serving from elsewhere), `DeploymentStream.fallback` (this stream started elsewhere in the US), and
+  `StreamState.fallback`. `pictograph deployments list` shows it: `active · live (1, elsewhere in the
+  US)`. Nothing to change in your code: older answers read as `False` / `0`.
+
+## [1.69.161]
+
+### Changed
+- **An RTSP camera on a stream comes over TCP unless it names another transport.** The platform's
+  default for `DeploymentClient.open_stream(source, transport=...)` (and a workflow's
+  `client.workflows.connect(...).open_stream`) is now `"tcp"`: a stream runs in a cloud container
+  behind NAT, where a camera's UDP seldom arrives, so `"auto"` (UDP first) cost nearly every camera a
+  wait before it fell back to TCP. `"auto"` and `"udp"` are still yours to ask for (a network where
+  the camera's UDP reaches the deployment). The change is the deployment's; this release's docstrings
+  and the `--transport` help of `pictograph deployments stream` / `pictograph workflows stream` say it.
+
+## [1.69.160]
+
+### Added
+- **An RTSP camera's `reconnect` on a stream.** `DeploymentClient.open_stream(source, reconnect=...)`
+  (and a workflow's `client.workflows.connect(...).open_stream`): `"always"` (the default: a camera
+  that drops or ends its stream is connected again) or `"never"` - a recording: its end ends the
+  stream, with its last frame decoded, and `DeploymentStream.ended` is `"source_ended"`. With
+  `transport="tcp"` and `buffer_mode="none"` it streams a recording that logs its file run's frames
+  and events. Like the other two, it is an RTSP camera's only (`ValueError` before any request, the
+  gateway's `invalid_source_option` otherwise).
+- The CLI's `pictograph deployments stream` and `pictograph workflows stream` take `--reconnect`.
+
+### Changed
+- The README's Agents section and `pictograph agents install-skill --help` lead with the Claude Code
+  plugin (`/plugin install pictograph --marketplace pictograph-io/pictograph-sdk`), which installs the
+  skill and takes the API key in one step; `install-skill` stays the way without the plugin.
+
+## [1.69.159]
+
+### Added
+- **An RTSP camera's `transport` and `buffer_mode` on a stream.**
+  `DeploymentClient.open_stream(source, transport=..., buffer_mode=...)` (and so a workflow's
+  `client.workflows.connect(...).open_stream`): `transport` is how the camera's video comes -
+  `"auto"` (UDP, then TCP when UDP brings nothing), `"tcp"` (over the RTSP connection: a camera's
+  UDP seldom reaches a cloud container, and a TCP-only tunnel carries nothing else) or `"udp"`;
+  `buffer_mode` `"none"` keeps the sender's own timestamps, so a recording streamed is timed as its
+  file is (`"auto"` smooths the camera's clock onto the receiver's). Both are `None` by default,
+  which sends neither (the engine's `auto`). Given for a source that is not an RTSP camera, or with
+  a value that is not one of theirs, they raise `ValueError` before any request; the gateway
+  refuses the same with `invalid_source_option` (400).
+- The CLI's `pictograph deployments stream` and `pictograph workflows stream` take them as
+  `--transport` and `--buffer-mode`.
+
+## [1.69.158]
+
+### Changed
+- The Claude Code plugin's README says where its data goes, for the plugin directory's data-handling
+  review: only to Pictograph - its API (`api.pictograph.io`: uploads, annotations, training, export,
+  deployment and inference requests, with the user's key) and the user's deployment and workflow
+  endpoints (`workflows.pictograph.io`); a V7 or Roboflow key given for an import goes to
+  Pictograph's API, which reads that provider. Image URLs are fetched on the user's machine;
+  webhooks are sent by Pictograph's servers; the plugin and CLI send no analytics or telemetry.
+- The plugin README and this README no longer say a key already in the environment wins over the
+  plugin's: since 1.69.156 the key entered for the plugin is the one its commands use.
+
+## [1.69.157]
+
+### Changed
+- **The bundled skill's text no longer reads as handing on the user's environment.** The plugin
+  directory's second review (of 1.69.156) still held "Uses a credential from the user's machine",
+  now on the skill's own wording: in a file that spells a remote URL, it reads a shell
+  `export PICTOGRAPH_API_KEY=...` line (and a Python variable named `export`) as handing on "the
+  installer's environment", and a `$PICTOGRAPH_CACHE_DIR` reference beside the word "pass" as a
+  credential. SKILL.md now says where the key comes from in prose (the plugin sets it; otherwise the
+  user does) instead of an `export` command; the example variable is `created`; the cache directory
+  is named without `$`; "pass" reads "give", "add", "set" or "name". No behaviour changed.
+- `tests/unit/test_claude_plugin.py` holds every skill file that spells a URL to none of those
+  shapes, with positive controls on the lines the directory flagged.
+
+The directory's remaining hold, "Scripts the validator couldn't follow" (the SessionStart hook),
+is by design: the hook writes `CLAUDE_ENV_FILE`, which Claude Code runs before each command, and the
+directory sends any such script to a human reviewer.
+
+## [1.69.156]
+
+### Changed
+- **The Claude Code plugin clears the plugin directory's two remaining policy holds.** The
+  directory's review of 1.69.155 named exactly what it held:
+  - "Uses a credential from the user's machine": the skill's V7 example handed `$V7_KEY` (an
+    environment variable) to a command in a file that also spells a remote URL, and the deployment
+    example sent a `pk_deploy_` token to `<your-deployment-endpoint>`. The V7 example now takes the
+    key as a value, or on stdin; the deployment examples name Pictograph's own gateway host
+    (`https://workflows.pictograph.io/us-east/<deployment-slug>/predict`), which is the only host
+    a deployment token goes to.
+  - "Scripts the validator couldn't follow" (hooks/session-start.sh): the SessionStart hook runs in
+    exec form - its command is the script's literal path under `CLAUDE_PLUGIN_ROOT`, `args: []`,
+    no shell - and is a plain `/bin/sh` script. It no longer reads the user's own
+    `PICTOGRAPH_API_KEY` to defer to it: the key entered for the plugin is the one its commands
+    use.
+- `scripts/import_connector.py` (the bundled skill's V7 / Roboflow importer) no longer reads
+  `PICTOGRAPH_SOURCE_KEY`: `--api-key` is required, and `--api-key -` reads the key from stdin,
+  which keeps it out of `ps` and shell history. The `pictograph connectors` CLI is unchanged.
+- `tests/unit/test_claude_plugin.py` fails on a credential-named environment variable handed to a
+  command anywhere in the skill, or read with `os.environ`, and on a deployment example that does
+  not name Pictograph's host (each gate proven to catch what the directory flagged).
+
+## [1.69.155]
+
+### Changed
+- **The Claude Code plugin is its own directory, `claude-plugin/`, and passes Anthropic's plugin
+  directory checks with no findings** (`claude plugin validate --profile directory`). The
+  marketplace entry pointed at `src/pictograph`, so the directory read the whole package as plugin
+  content and held it on two policies. Now:
+  - The API key is a sensitive plugin option (`userConfig.api_key`): Claude Code asks for it when
+    the plugin is enabled and keeps it in the system credential store. A SessionStart hook
+    (`hooks/session-start.sh`) sets it as `PICTOGRAPH_API_KEY` for the session's commands; it
+    prints nothing, writes nothing when the user already has `PICTOGRAPH_API_KEY` set, and refuses
+    a value a shell could read as code.
+  - The skill pre-approves only `Bash(pictograph *)` and `Read` (it pre-approved all of Bash,
+    `Edit` and `Write`). Anything else still asks.
+  - `plugin.json` carries the listing fields (icon, documentation, support, privacy and terms
+    URLs) and the SDK's version.
+  - The skill's stdin example reads a local file (`cat photo.jpg | ...`) instead of piping `curl`.
+- The plugin carries a copy of `src/pictograph/skills/pictograph-cv`, the one skill;
+  `tests/unit/test_claude_plugin.py` fails when the copy drifts, when the manifest's version is
+  not the SDK's, and on any change to the hook's behaviour above.
+- SKILL.md drops the paragraph restating when to use it: its frontmatter `description` decides
+  that, and the body is read only after.
+
+## [1.69.154]
+
+### Added
+- **The skill installs as a Claude Code plugin from this repository.** A
+  `.claude-plugin/marketplace.json` at the repository root lists one plugin, `pictograph`, whose
+  root is `src/pictograph` (its `skills/pictograph-cv`): `/plugin install pictograph --marketplace
+  pictograph-io/pictograph-sdk`. It loads the same SKILL.md that `pictograph agents install-skill`
+  copies, so there is one skill, not two. `claude plugin validate` passes; installed in an isolated
+  Claude Code config it loads one skill and nothing else.
+
+### Changed
+- The package description, keywords and README describe Pictograph as it is now: real-time vision
+  tools for agents and developers. The README gains a deploy-then-stream section (an RTSP camera
+  through a deployment, one result per frame); its calls are bound to the SDK by
+  `tests/unit/test_readme_calls.py`. `pictograph --help` and the package docstring say the same
+  (they said "agent-native CV annotation platform"). No behavior changed.
+
+### Fixed
+- `tests/unit/skills/test_pictograph_cv.py::test_doc_sdk_calls_bind` bound a placeholder `self`
+  to every `client.<resource>.<method>(...)` call, so a documented call to a staticmethod
+  (`client.deployments.connect(deployment=..., ...)`) failed with "multiple values for argument
+  'deployment'". It now binds `self` only for a bound method; it still fails a bad keyword on
+  `connect`.
+
+## [1.69.153]
+
+### Changed
+- **A workflow's endpoint is made with it, and its file and dataset runs run there** (B579 slice 5).
+  `client.workflows.create(..., compute=, region=, min_containers=, max_containers=, scaledown_window=)`
+  makes the workflow and its endpoint together - in `region` (`"auto"`, the default: the one nearest
+  you), on the GPU `compute` names, with that autoscaling - and its answer carries the endpoint's token
+  once (`endpoint_token`: store it to stream from code; it is revealable again in the app). Every run
+  and invoke runs on that endpoint and is billed as its uptime while it runs (a failed or cancelled run
+  too); a SAM3 block's seconds are charged with the run at its end. `deploy` stays for a workflow made
+  before endpoints were made with workflows, and for a failed or draft endpoint. CLI: `pictograph
+  workflows create --region --gpu --min-containers --max-containers --scaledown-window`.
+- **`run` and `invoke` no longer take `gpu=`**: a run runs on its workflow's endpoint, on the
+  workflow's GPU (`update(..., compute={"gpu": "l4"})` moves the endpoint; a run started meanwhile waits
+  for it). The server refuses a run naming another GPU (`run_compute_retired`), saying how to change the
+  workflow's. CLI: `workflows run` drops `--gpu`.
+- **`compute_options(region=)`**: the GPUs priced in a region (each with `cost_per_hour_micro_usd`
+  beside its per-minute price - the endpoint's container), the options' `region`, every `regions` entry
+  and `transfer_per_gib_micro_usd`. CLI: `workflows compute-options --region`.
+- **Models**: `WorkflowEndpoint.run_limit` (its runs at once: one a container, up to its maximum) and
+  `streams` (False: it runs its files only, `error_message` saying why - a SAM3 block); `WorkflowRun`
+  gains `dispatch_note` (why a queued run waits) and `endpoint_id`; `WorkflowRunCreated` and
+  `WorkflowRun` drop `deposit_micro_usd` (there is no pre-run estimate: the endpoint's uptime is billed).
+  `wait_until_live` accepts an endpoint that serves runs only.
+
+## [1.69.152]
+
+### Fixed
+- **The docs no longer say keypoint models never carry a `.pth`.** The bundled skill's inference
+  reference and the PyTorch runtime's docstrings said `rfdetr_keypoint` publishes `safetensors` only;
+  that is true of versions trained before 2026-07-31 - later ones carry a `.pth` too, and it predicts
+  exactly as their safetensors does (checked on a dev-org keypoint model: the same 6 points, coordinates
+  and confidences identical). Asking for a container a version lacks is still refused, naming the ones
+  it has.
+
+## [1.69.151]
+
+### Fixed
+- **`formats.to_coco` names the joint of every keypoint category.** A point no template covers is
+  written under its own name as a one-joint object - a landmark class with no template, a name on no
+  template, a duplicate joint that spilled out of its instance - and its annotation carries an
+  `[x, y, v]` triplet, but its category declared no `keypoints`, so a COCO-keypoints reader held a
+  triplet it could not name. Such a category now declares `keypoints: ["<name>"]` and `skeleton: []`,
+  exactly as the server's COCO export does. Templates read back by `from_coco` are unchanged (a
+  one-joint category is not a template). Found by a new check that diffs this writer's output against
+  the export's on the same records.
+
+## [1.69.150]
+
+### Fixed
+- **A YOLOX `.pth` whose checkpoint stored numpy numbers loads again.** Older YOLOX checkpoints saved
+  `best_ap` / `curr_ap` as numpy float64, so their pickle names numpy's scalar, `numpy.dtype` and the
+  dtype's class - and the safe checkpoint loader refused them: the Use-Model PyTorch snippet for such a
+  model raised `UnsafeCheckpointError`. numpy NUMBER types (they build a number from a dtype and its bytes,
+  and run nothing) are now on the safe loader's allowlist, under the name numpy 1 and numpy 2 each pickle
+  them as. Object arrays and every other global stay refused; `allow_unsafe_pickle` is still never needed
+  for our own checkpoints. Found by running the app's snippets end to end.
+
+## [1.69.149]
+
+### Added
+- **A stall is a signal.** `DeploymentStream.frames(idle_timeout=...)` (and `messages(idle_timeout=...)`)
+  raises `StreamStalledError` once the reader has gone that many seconds without a frame - a camera
+  that stalled, a sender gone, a connection down - instead of waiting on. The stream keeps running:
+  read again to wait another `idle_timeout` for its video. The time spent on a frame never counts.
+  `StreamStalledError.quiet_s` is how long the source has been quiet (the deployment's own measure,
+  from the heartbeat it now sends each second while no frame comes, when it sent one), and `alive`
+  whether the deployment kept talking after the last frame (the stream is up and its camera quiet) or
+  nothing came at all (its connection may be down). `pictograph deployments stream` and
+  `pictograph workflows stream` take `--idle-timeout SECONDS` (exit code 9, `stream_stalled`, the
+  stream stopped with it).
+- **When a frame was captured.** `StreamFrame.capture_time` (a UTC `datetime`) and `capture_ns`: the
+  frame's capture by its sender's clock - a camera's, or the machine that sent the video over WebRTC -
+  from its RTCP sender reports; `None` until the sender's first report. `capture_latency_ms` is capture
+  to the result reaching you, on your clock (`received_ns`): exact when this machine sent the video.
+
+## [1.69.148]
+
+### Fixed
+- **A keypoint with a NaN or infinite coordinate no longer reaches a COCO file.** The model
+  accepts one (an API answer can carry `"nan"`), and the keypoint grouping kept it: its instance's
+  box became NaN and `formats.to_coco` wrote a literal `NaN` / `Infinity` that a strict reader
+  (pycocotools, `json` with `allow_nan=False`) refuses. The point is now dropped - its template slot
+  serializes `0, 0, 0` and the box comes from the instance's other points - exactly as the server's
+  export and the training preparation drop it; `tile.tile_image` places it on no tile. Finite data
+  is unchanged.
+
+## [1.69.147]
+
+### Added
+- **A workflow's log, filtered by its Condition branch.** `workflows.run_log`, `iter_run_log`,
+  `live_log` and `iter_live_log` (and their async twins) take `branch=True` / `branch=False`: only the
+  frames and events a Condition block routed down that branch. Each record says its own
+  (`RunLogRecord.condition`; `None` on a workflow without a Condition), and a log's summary counts
+  each branch per stream (`RunLogStreamSummary.condition`, a `RunLogBranchCounts` of `passed` /
+  `failed`). `iter_live_log` now takes every filter `live_log` does. CLI: `pictograph workflows log
+  --branch true|false` and `pictograph workflows live-log --branch true|false`; the log's tables show
+  each record's branch when the run has a Condition.
+
+## [1.69.146]
+
+### Added
+- **An event's values in words.** Each events record of a run's or a workflow's live log carries
+  `RunLogRecord.values_text`: its trigger's rule values as the server words them - "1 crossed",
+  "Lot: 1 entered", "Lot: 3 inside · car: 4 in view" - its lines and zones by name, an event's own
+  line or zone left to the event's name; `None` for a record without values. `rule_values` keeps the
+  engine's keys. `pictograph workflows log --stream events` prints the words.
+
+## [1.69.145]
+
+### Added
+- **A workflow's live outputs.** While a workflow streams, its webhook and annotations outputs act on
+  its events - the same events its log records (a line crossed, a zone entered or left, a dwell
+  reached, a class appearing, its Condition true): a webhook output posts them in
+  `workflow_stream.events` deliveries (and `workflow_stream.ended` when a stream ends); an annotations
+  output saves their frames into its dataset, and passive frames at a steady pace - at most one frame a
+  second in all, an event's first. `WorkflowEndpoint.live.events` (`WorkflowLiveEvent`: trigger, key,
+  kind, name, captured) lists the events its outputs act on, `WorkflowEndpoint.live_outputs`
+  (`WorkflowLiveOutputs`) counts what they did - events, deliveries, frames saved and not saved (the
+  last reason), frames skipped - and `RunLogPage.event_names` (`RunLogEventName`) names each event
+  record's `trigger` as the app does. `pictograph workflows` prints an endpoint's live events and
+  counts, and `pictograph workflows log --stream events` names each event.
+
+## [1.69.144]
+
+### Changed
+- **A workflow's endpoint URL is where its streams open** (`.../{region}/{slug}/sessions`): a workflow
+  endpoint takes streams, never a single image, so its `endpoint_url` no longer names a `/predict` it
+  would refuse. `DeploymentClient` (and `Workflows.connect`, `pictograph workflows stream --endpoint`)
+  takes an endpoint URL ending in `/predict` (a deployment's) or `/sessions` (a workflow's): its
+  streams open on the endpoint's sessions, `infer` posts to its `/predict`. Any other URL is refused
+  naming both forms.
+
+## [1.69.143]
+
+### Changed
+- **A workflow is served live by deploying it, never by creating it.** `client.workflows.create`
+  (and its async twin, and `pictograph workflows create`) no longer takes `region`,
+  `min_containers`, `max_containers` or `scaledown_window`, and its answer carries no
+  `endpoint_token`: a new workflow's `endpoint` is None until `client.workflows.deploy(name,
+  region=..., ...)` (`pictograph workflows deploy NAME --wait`) serves it - its token on that
+  answer, once - as a model is served by deploying it (its models' engines are built for
+  it). (An earlier note here said each endpoint held one of a Modal workspace's few web functions:
+  it does not.) `pictograph workflows create` says how to deploy what it made.
+
+## [1.69.142]
+
+### Added
+- **A workflow is served live.** A workflow's `endpoint` (`WorkflowEndpoint`) streams a camera or a
+  video through every block of it - its models, its Filter, its tracker, its lines and zones - in a
+  region (`us-east`, `us-west`), with a deployment's states (`draft` until it can stream,
+  `provisioning`, `active` - live, starting, waiting for a GPU or asleep - `paused`, `failed`), its
+  autoscaling and its own `pk_deploy_` token. `client.workflows.create(..., region=, min_containers=,
+  max_containers=, scaledown_window=)` serves a new one (its token on the answer once,
+  `endpoint_token`); `deploy` serves one made before endpoints or retries a failed deploy; `pause`,
+  `resume`, `update_endpoint` (its autoscaling, live at once), `wait_until_live`, and
+  `Workflows.connect(workflow, token)` - THE `DeploymentClient`, whose `open_stream` streams it.
+  `live_log`, `iter_live_log` and `live_log_summary` read what its streams logged. Async twins on
+  `AsyncClient`. `endpoint.live` names its models, its lines and zones (`measures`: `L1`, `P1`, ...,
+  each in its overlay colour) and its classes (their colours and annotation types).
+- `StreamFrame.measures`: each line's and zone's counts on a frame of a workflow's stream, by id.
+- A stream's open is tried again on `endpoint_updating` (a workflow's save is still deploying).
+- CLI: `pictograph workflows create --region/--min-containers/--max-containers/--scaledown-window`,
+  `workflows deploy`, `pause`, `resume`, `scale`, `stream` (each frame one JSON line, its `measures`
+  in it) and `live-log`; `workflows list` shows each endpoint's state, region and engine build.
+
+### Changed
+- `Deployment.status` may be `draft` (a workflow's endpoint that has not deployed).
+- The CLI's endpoint options and state words (`active · live (2)`, `waiting for a GPU 1m42s`) are one
+  module for `deployments` and `workflows`; a deployment's token is revealed in its Analytics in the
+  app (it said its settings).
+
+## [1.69.141]
+
+### Added
+- **Write a workflow graph without guessing.** `client.workflows.nodes()` returns every block a
+  graph can hold - its ports, a new block's config as the app makes it, every setting (the values
+  it may hold, what a run does without it, nested for a list's items) and the rules the validator
+  holds it to; `.card("measure")` is one block's. `client.workflows.templates()` returns the use
+  cases the app's "New workflow" starts from, each with its graph. `client.workflows.validate(graph)`
+  answers whether a run would start, saving and starting nothing: every issue the validator, the
+  engine and a run's start would raise (the source, models and annotations sinks are looked up in
+  your organization), each on its block. Async twins on `AsyncClient`.
+- CLI: `pictograph workflows nodes [block]`, `pictograph workflows templates [key] [-o graph.json]`,
+  `pictograph workflows validate [workflow | --graph file | --graph -]` (exit 6, every issue on
+  stderr and in the JSON error's `details`, when the graph would not run) and
+  `pictograph workflows create <name> --template <key>`.
+
+### Changed
+- `client.workflows.create(name, graph=None, template_key=...)`: the graph is optional - a
+  `template_key` without one starts from that template's graph (the server builds it; an unknown
+  key is refused), and the returned workflow lists what a run of it would still need.
+- `create` / `update` take `--graph -` (stdin), and a graph file that is not a JSON object is
+  invalid input (exit 6) before any request; they print the workflow's `validation`.
+
+### Fixed
+- `Workflow` dropped the `validation` list (and the README) the API returns on `get`, `create` and
+  `update`, so `workflows.get()` and `pictograph workflows get` never showed it although both said
+  they did. Both fields are read now.
+- `pictograph workflows create --template` listed three templates; there are nine.
+
+## [1.69.140]
+
+### Added
+- **Streams: live video through a deployment, with each frame's result as it is processed.**
+  `DeploymentClient.open_stream(source=...)` opens a stream on an active deployment. The source
+  is a camera the deployment connects to (`rtsp://`, `rtsps://`, or a WebRTC camera's `https://`
+  WHEP URL), or `"whip"` to send the video yourself to `stream.whip_url`. `stream.frames()`
+  yields a `StreamFrame` per frame: its `result` is the same typed result `infer()` returns, with
+  `index`, `pts`, `latency_ms`, `width`, `height` and the raw `message`. `stream.messages()`
+  yields every message, including a `stats` message each second. `stream.whep_url` plays the
+  video with the results drawn on it; `set_overlay(on=...)` turns the drawing on or off;
+  `state()` reads the stream's state; `stop()`, or leaving the `with` block, stops it, and
+  `stream.ended` says why a stream ended. A dropped results connection reconnects on its own.
+  New exports: `DeploymentStream`, `StreamFrame`, `StreamKind`, `StreamLatency`, `StreamState`.
+- **`pictograph deployments stream DEPLOYMENT SOURCE --token pk_deploy_...`** prints each frame's
+  result as one JSON line until Ctrl-C, `--frames` or `--seconds` (`--all` adds the stats
+  messages, `--no-overlay` starts without the drawing, `--endpoint` needs only the token). The
+  stream stops when the command ends.
+- `websockets>=13.0` is a new dependency, for the results WebSocket. It is imported only when a
+  stream is read.
+
+### Fixed
+- The wire-contract gate now gives `auto_annotate.similar` and `quote_similar` their examples
+  (`reference_class`), so their requests are checked against the route again; they were
+  reported as sending nothing.
+
+## [1.69.139]
+
+### Added
+- **`pictograph api-keys list / get / create / update / revoke`** - mint a narrowly-scoped key for
+  an agent from the shell. A key is named by its id, its prefix (`pk_live_...`) or its name.
+  `create` prints the secret once; `create --save-profile <name>` keeps the new key in a CLI
+  profile without printing it (`--role`, `--rate-limit`, `--expires`). `update` renames a key,
+  caps it (`--rate-limit` / `--clear-rate-limit`) and turns it off and on (`--inactive` /
+  `--active`); `revoke` asks first (`--yes` skips). An unknown key exits 4, an ambiguous one 6,
+  before any change.
+- **CLI profiles: one API key per organization.** `pictograph login --profile <name>` saves a key
+  as its own table in `~/.pictograph/config.toml` beside `[default]`; the root
+  `pictograph --profile <name> <command>` flag or `PICTOGRAPH_PROFILE` runs as it, and
+  `pictograph profiles list` shows every profile (keys masked) and which is active. Order:
+  `--api-key` > `--profile` > `PICTOGRAPH_API_KEY` > `PICTOGRAPH_PROFILE` > `[default]`. A
+  profile named by the flag or the environment must exist (exit 2, `unknown_profile`, with the
+  profiles that do). Under `--profile` the base URL is that profile's own or production, never
+  `PICTOGRAPH_BASE_URL`, so a profile's key is only sent where it was saved for.
+
+### Changed
+- `pictograph login` keeps the config file's other profiles when it writes one (it rewrote the
+  whole file), and values are written escaped: a key or URL holding a quote or backslash reads
+  back as it was written, and one holding a control character is refused.
+
+### Fixed
+- The bundled skill said `Client()` reads `~/.pictograph/config.toml`. It does not: the SDK reads
+  `api_key=` or `PICTOGRAPH_API_KEY`; the config file is the CLI's.
+
+## [1.69.138]
+
+### Changed
+- **A training run that names no variant or size trains what the web app trains** (server-side,
+  every SDK version): RF-DETR detection and segmentation `medium` (an omitted `model_size` gave
+  nano / small - while `gpu_type="auto"` sized the GPU for a medium), semantic segmentation at
+  512 px (was 640), and classification at the backbone's pretrained size - EfficientNet B1-B4 at
+  240 / 260 / 300 / 380 instead of a flat 224. `training.quote` shows the same plan.
+
+### Fixed
+- `training.create`'s docstring named `model_type` and no size key: the variant is `model_size`,
+  the input size `image_width` / `image_height`, and it now says what a key left out trains.
+
+## [1.69.137]
+
+### Fixed
+- **A refusal made before any request no longer says the API refused it.** `client.jobs.cancel` on a
+  job that has ended, cannot be cancelled through the API, or names a cancel route outside the
+  developer API raised a `ValidationError` whose `fix` read "The API refused the request as
+  invalid" - no request had been sent. Each now carries its own `fix` (the job has ended: see
+  `client.jobs.list()`; let it finish or cancel it in the app).
+- **`DeploymentClient` constructed with the wrong `task=` raises `ValidationError`**, not
+  `ServerError`: the caller's argument is wrong, not the server, and the CLI now exits 6 ("invalid
+  input") instead of 9 ("retry later"). Its `fix` names the task the endpoint serves. An unknown
+  `model_type` (upgrade the SDK; `infer_raw()` meanwhile) and a missing one (pass `task=` or call
+  `infer_raw()`) keep `ServerError` with a `fix` that says what to do, not "contact support".
+
+## [1.69.136]
+
+### Added
+- **Copy images into another dataset.** `client.batch.copy_to_dataset(dataset_name, image_ids,
+  target_dataset_name, target_directory_path="/")` is the app's grid Copy/Paste: the copies share
+  the stored files (nothing is uploaded or duplicated, and they do not count toward the image
+  quota a second time) and carry their annotations, tags, training split and review stage. A name
+  already in the target folder is renamed `-{n}`, and the classes the copied labels use that the
+  target dataset lacks are added to it as the source defines them (colour, attributes, a keypoint
+  skeleton whose joints it has). Returns a `CopyToDatasetResult` (`processed`, `failed` naming
+  each id that made no copy, `renamed`, `target_dataset`, `classes_added`). Async twin on
+  `AsyncClient`. CLI: `pictograph images copy <dataset> --to-dataset <name> [--to /folder]` with
+  the usual selection (`--images`, `--from-file`, `--directory`, `--status`, `--split`, `--all`,
+  `--dry-run`); a selection over 10,000 images runs as several calls and the report adds up
+  `classes_added`. `--duplicates skip|overwrite` is refused with `--to-dataset`.
+- `pictograph images copy` no longer needs `--to` with `--to-dataset` (the target dataset's root).
+
+## [1.69.135]
+
+### Added
+- **"Annotate similar" from the SDK and the CLI.** Draw one or more polygons around an example
+  object on one image; `client.auto_annotate.similar(dataset_name, image, reference_class=...)`
+  (or `annotation_ids=[...]`) labels every object like it in the other images of that image's
+  folder, or of the whole dataset (`scope="dataset"`), as `target_class` (the examples' class by
+  default; `output_type="bbox"` / `"obb"` writes boxes). It is the app's job - one job of up to
+  2,000 images, charged its measured GPU time once, when it completes (a failed or cancelled job
+  is free) - and returns a `BatchJob` (`wait=False` for the kick-off; `get_batch` /
+  `wait_for_batch` / `client.jobs` follow it). `quote_similar` runs the same checks and returns a
+  `SimilarQuote` (the images it would label, the estimate, your balance) without running
+  anything. Async twins on `AsyncClient`. CLI: `pictograph auto-annotate similar <dataset>
+  <image> --class <name> | --annotation <id> [--scope dataset] [--target] [--output-type]
+  [--confidence] [--quote] [--no-wait] [--json]`.
+- The SAM3 tool card (`pictograph tools describe sam3`) has a `similar` mode.
+
+## [1.69.134]
+
+_Not published on its own; first released in 1.69.135._
+
+### Added
+- **A deployment's stream limit and its streams.** `Deployment.stream_limit` is how many streams it
+  runs at once - its `max_containers` times the stream sessions each container holds (a webcam, an
+  RTSP or WebRTC camera, the app's Test tab; sessions are opened on its gateway, beside `/predict`).
+  `0` for a deployment provisioned before streams, until it is paused and resumed.
+  `DeploymentRuntime.streams` counts the containers serving its streams - never in `containers` or
+  `state`, which stay its predicts'.
+
+## [1.69.133]
+
+### Changed
+- **A deployment has no request ceiling unless you set one.** The gateway used to refuse
+  past 300 requests a minute by default - a single 20 fps stream (1,200 a minute) was
+  refused 3 frames in 4. Now `client.deployments.create(..., rate_limit_rpm=...)` sets a
+  ceiling when you want one, `update(..., rate_limit_rpm=...)` changes it (`0` removes it),
+  and `Deployment.rate_limit_rpm` reads it back (None: none). The async client, the CLI
+  (`--rate-limit` on `deployments create` and `update`) and the `create_deployment` agent tool
+  take it too. A ceiling no longer lives in `inference_config` (the API refuses it there).
+- **A deployment's data transfer is billed per GiB**, beside its uptime: each image sent
+  through its endpoint and its answer. `quote().transfer_per_gib_micro_usd` and
+  `compute_options().transfer_per_gib_micro_usd` give the price (the same on every GPU and in
+  every region); `Deployment.transfer_bytes` and `Deployment.transfer_cost_micro_usd` read
+  what it has sent so far and its part of `accrued_cost_micro_usd`.
+- `DeploymentClient`'s `rate_limited` error says the ceiling is the deployment's own setting
+  and how to raise or remove it.
+
+## [1.69.132]
+
+### Added
+- **A deployment runs in a region you choose.** `client.deployments.create(..., region=...)`
+  runs it in `"us-east"` (Virginia) or `"us-west"` (Oregon), or `"auto"` - the default, the
+  region nearest where the call is made. Choose the region nearest the cameras and clients
+  that will call it; it is set at create and never changes. `quote(region=...)` and
+  `compute_options(region=...)` price a region's GPUs at its own rate, and
+  `compute_options().regions` lists the regions (`DeploymentRegion`: `id`, `label`,
+  `location`, `ping_url`). `Deployment.region` reads it back, and a deployment's
+  `endpoint_url` names its region: only that region's gateway serves it. The async client,
+  the CLI (`--region` on `deployments create`, `quote` and `compute-options`, which lists
+  the regions; the region beside each deployment) and the agent tools take it too.
+- `DeploymentClient` names a `wrong_region` answer (a URL naming another region than the
+  deployment's) with what to do: call its `endpoint_url` exactly as it is.
+
+## [1.69.131]
+
+### Added
+- **Rename a deployment and write its README.** `client.deployments.update(deployment,
+  name=..., readme=...)` (and the async twin; the CLI's `deployments update --name ...
+  --readme ...`) changes them beside its autoscaling, only what is given: a rename keeps its
+  endpoint and its token, and `readme=""` clears it. A name another live deployment of the
+  organization holds is a `ConflictError`. `Deployment.readme` reads it back. The CLI says a
+  paused deployment "takes this scaling when it is resumed" only when a scaling flag was given.
+
+## [1.69.130]
+
+### Fixed
+- **How long a deployment takes to come up, said as measured.** Every docstring, the CLI's
+  help, the bundled skill, the `pictograph init` template, the example and the agent tool's
+  description said a deployment turns `active` "in seconds" once its model's TensorRT engine
+  is built. It takes about a minute: its server is deployed and started (measured 40 - 90 s),
+  and a model's first deployment on a GPU at a precision, which builds the engine first, a few
+  minutes. Only the words changed.
+
+## [1.69.129]
+
+### Added
+- **Change a deployment's autoscaling after it was created.**
+  `client.deployments.update(deployment, min_containers=..., max_containers=...,
+  scaledown_window=...)` (async twin on `AsyncClient.deployments`) takes the deployment by name
+  or id, sends only what you pass and returns the `Deployment` with its new scaling. It raises
+  `ValueError`, before any request, when nothing is given. An `active` deployment takes the
+  change at once, with no redeploy and no restart; a `provisioning` one when it is up, a
+  `paused` one when it is resumed. `min_containers` above `0` keeps that many containers
+  running and billed whether or not requests come; `0` lets the deployment scale to zero after
+  `scaledown_window` idle seconds (nothing is billed while it sleeps; the next request wakes
+  it). Raising `min_containers` needs spendable compute credit (`PaymentRequiredError`); a
+  failed or terminated deployment's scaling cannot change (`ConflictError`); a live deployment
+  that refuses the change answers `502` with nothing changed, and the SDK retries it. The GPU
+  and precision are not changeable this way: deploy again.
+- **CLI:** `pictograph deployments update <deployment> [--min-containers N] [--max-containers N]
+  [--scaledown-window SECONDS]` (`--min`, `--max`, `--scaledown` too) prints the deployment
+  with its new scaling, says on stderr when a paused or provisioning deployment will take it,
+  and is refused before any request (exit `6`) when no option is given. `deployments create`
+  takes `--scaledown-window` beside `--scaledown`, so the two commands take the same flags.
+
+### Fixed
+- `pictograph deployments resume <one deployment>` prints the deployment as `create`, `wait` and
+  `get` do (name, status, GPU, precision, endpoint, and `runtime` once it is active), as 1.69.128
+  said it would; it printed only its id and status.
+
+## [1.69.128]
+
+### Added
+- **What an active deployment is doing right now.** `Deployment.runtime` (new
+  `DeploymentRuntime`) is `None` unless the deployment is `active`; then `runtime.state` is
+  `"live"` (a container up and serving: `containers` of them), `"starting"` (a container being
+  created, its engine loading: `creating`), `"waiting"` (a request waiting and no GPU found for it
+  yet, since `waiting_since`; or a warm minimum with no container yet), `"asleep"` (scaled to
+  zero: the next request wakes it) or `"unknown"` (the compute platform did not answer in time),
+  read at `checked_at`. `state` is a `str`, so a state added later still parses. Reading it never
+  wakes the deployment. It rides on every deployment the API answers - `list`, `iter`, `get`,
+  `create`, `pause`, `resume`, sync and async; `wait_until_active` is unchanged.
+- **CLI:** `pictograph deployments list` shows the live state beside the status
+  (`active · live (2)`, `active · starting (1)`, `active · waiting for a GPU 1m42s`,
+  `active · asleep`; the wait is measured on the server's clock), and `get`, `wait`,
+  `create --wait` and `resume --wait` print it as `runtime`.
+- The `list_deployments` / `get_deployment` agent tools say an active deployment's
+  `runtime.state` is in what they return.
+
+## [1.69.127]
+
+Deployments run on PRT, Pictograph's realtime engine: a TensorRT engine of the model, on a GPU
+only (T4, L4 or A100), at a precision. Breaking changes ship in place (no external consumers yet).
+
+### Added
+- **`client.deployments.wait_until_active(deployment, timeout=900.0, poll_interval=3.0)`**
+  (async twin on `AsyncClient.deployments`). A deployment answers `provisioning` at create and
+  resume and turns `active` when its server is up: seconds when the model's engine is already
+  built for its GPU and precision, a minute or more for a model's first deployment there, which
+  builds it first. Takes a name, an id, or the `Deployment` `create` / `resume` returned; resolves
+  a name once, then polls by id. A failed deployment raises `ApiError` with `code="job_failed"`
+  (its `error_message` in the message), a paused or terminated one `code="job_cancelled"` (the
+  deployment is the error's `response`), and a timeout raises `PollTimeoutError`.
+- **`precision`** on `deployments.create` (`"fp32"`, the default, or `"fp16"`), typed as the new
+  `DeploymentPrecision`.
+- `Deployment` gains `precision`, `version_id`, `engine_build` (the TensorRT engine build a
+  provisioning deployment waits on: the same `EngineBuild` record a workflow run carries, now in
+  `pictograph.models.engine_build`), `error_message`, `cost_per_hour_micro_usd`,
+  `max_cost_per_hour_micro_usd`, `accrued_cost_micro_usd`, `metrics` (new `DeploymentMetrics`:
+  the gateway's request counts and latency), `updated_at` and `paused_at`.
+- `DeploymentQuote` gains `container_cost_per_hour_micro_usd`, `warm_cost_per_hour_micro_usd`,
+  `warm_cost_per_day_micro_usd` and `max_cost_per_hour_micro_usd`; `DeploymentComputeOption`
+  gains `cpu_cores`, `memory_gib` and `cost_per_hour_micro_usd`.
+- **The precisions a deployment takes, in the server's words**: `deployments.compute_options()`
+  returns the new `DeploymentComputeOptions` - `options` (the GPU tiers, as before) and
+  `precisions` (new `DeploymentComputePrecision`: `precision`, `label`, `description`; `fp32`, the
+  default, first) - the same list a workflow's Model block offers. `pictograph deployments
+  compute-options` prints a precisions table beside the GPU tiers (`--json` prints both).
+- **`DeploymentClient` reads what the gateway reports**: `backend` is `"tensorrt"` when it names
+  PRT (`X-Pictograph-Engine: prt`; a gateway that names no engine reads `"onnxruntime"`, as
+  before), `device` is `X-Pictograph-Device`, and `inference_ms` is the engine's own `infer` time
+  from `Server-Timing` (it was always `None`). The result shape is unchanged.
+- **`DeploymentClient` errors carry the gateway's slug as `code`** (`deployment_not_active`,
+  `deployment_starting`, `overloaded`, `rate_limited`, `inference_timeout`,
+  `deployment_unreachable`, `gateway_unavailable`, `unauthorized`, ...) with a `fix` for each, and a sentence when the
+  body has none. A `503` with `Retry-After` (a deployment starting or at capacity) is retried
+  after it, through the new `RetryPolicy(retry_after_statuses=...)` (default `{429}`, so the main
+  client is unchanged).
+- **CLI:** `pictograph deployments create --precision fp32|fp16 --wait [--timeout]` (a create
+  whose wait fails or runs out still prints the one-time token), `pictograph deployments wait
+  <deployment> [--timeout] [--poll-interval]`, `deployments resume --wait`, and `deployments
+  quote --max-containers` / `--max` (`create` takes `--min-containers` / `--max-containers` too).
+  `deployments list` shows each deployment's precision and engine build, `compute-options` each
+  GPU's container and hourly rate. The `pictograph init` AGENTS.md template creates its
+  deployment with `--wait` and says why.
+
+### Changed
+- `deployments.compute_options()` returns `DeploymentComputeOptions` instead of a list of
+  `DeploymentComputeOption`: read `.options` for the GPU tiers (and `.precisions` beside them).
+  The CLI's `compute-options --json` prints `{"options": [...], "precisions": [...]}`.
+- `DeploymentClient` and `deployments.connect()` default to a 150 s `timeout` (was 60 s): the
+  gateway holds the first request to a scaled-to-zero deployment for up to 120 s while its
+  container starts, and a shorter timeout abandoned requests it was about to answer.
+- `deployments.quote(gpu_type="t4", min_containers=0, max_containers=1)` and
+  `deployments.create(..., gpu_type="t4", ...)`: `gpu_type` no longer takes `None` (there is no
+  CPU tier to mean), and `quote` takes `max_containers`.
+- The agent tool `create_deployment` takes `precision` and no `compute_type`; the deployment
+  tools' descriptions say a deployment provisions before it is active.
+
+### Removed
+- **The CPU tier.** `compute_type` is gone from `deployments.create` and `deployments.quote`, and
+  `--compute` / `--compute-type` from the CLI: TensorRT needs a GPU. `Deployment.compute_type`
+  still parses `"cpu"` for a deployment made before the GPU-only engine (it cannot be resumed).
+- `Deployment.cost_per_hour` and `Deployment.accrued_cost_credits`, which never matched the API
+  (they always read their defaults): use `cost_per_hour_micro_usd` / `accrued_cost_micro_usd`.
+
+## [1.69.126]
+
+### Added
+- **One view of every job.** `client.jobs` lists the work your organization is running -
+  training runs, batch auto-annotation, workflow runs, model evaluations, exports, and the
+  background jobs behind imports, video extraction and bulk image operations - newest first,
+  in one status vocabulary (`queued`, `running`, `completed`, `failed`, `cancelled`):
+  `jobs.list(status="active" | "finished" | "all" | <status>, type=)`, `jobs.get(id)`,
+  `jobs.wait(id)` (raises `ApiError` with `code="job_failed"` / `"job_cancelled"`, or
+  `PollTimeoutError`) and `jobs.cancel(id)`, which cancels through the route for that kind of
+  job (named by the job's `cancel_path`; a job without one raises `ValidationError` before
+  any request). Async twins on `AsyncClient.jobs`. New model `Job`.
+- **CLI:** `pictograph jobs list [--status] [--type] [-n]`, `jobs get`, `jobs wait`
+  (`--timeout`, `--poll-interval`; exit 10 when still running) and `jobs cancel`. The
+  `pictograph init` AGENTS.md template and the bundled skill name them.
+
+## [1.69.125]
+
+### Removed
+- **`WorkflowRun.engine` and `WorkflowRunSummary.engine`.** Every workflow run runs on PRT,
+  Pictograph's realtime engine (the ONNX workflow runner was retired), so a run no longer names
+  its engine, and `pictograph workflows runs` drops its engine column. A server that still sends
+  the field parses as before (it is ignored).
+
+### Changed
+- `WorkflowRun.has_log`'s note: every run writes a log, unless its log could not be opened
+  (the run's `warnings` say so).
+
+## [1.69.124]
+
+### Added
+- **Start from a public dataset.** `client.explore` reads the public catalog - the datasets
+  and models any organization published to Explore, as the app lists them:
+  `explore.datasets(search=, class_name=, sort=)` / `iter_datasets`, `explore.dataset(ref)`
+  (the card, license, every class) and `explore.models(search=, model_type=, sort=)` /
+  `iter_models`. A public dataset or model lives in another organization, so it is named
+  `"org/name"` - the organization's slug and its own slug or name; every row's `ref` is that.
+  Models `PublicDataset`, `PublicModel`, `PublicOrganization`. Async twin `AsyncExplore`.
+- **`client.datasets.import_public(ref, name=None, wait=True)`** imports a public dataset into
+  your organization as a private copy - the app's "Import Dataset": the source's classes,
+  license and attribution come along, its images are referenced rather than copied (a large
+  dataset is ready in minutes), and the copy stays yours if the source is unpublished. A name
+  you already use gets `(imported)`; read `dataset_name`. A copy past the plan's image limit is
+  refused (`PaymentRequiredError`, `image_limit_exceeded`) before anything is made. Returns a
+  `PublicDatasetImport`; `get_public_import(import_id)` and `wait_for_public_import(import_id)`
+  follow one started with `wait=False` (a failed or cancelled import raises `ApiError` with
+  `code` `job_failed` / `job_cancelled`; a timeout raises `PollTimeoutError` and the import
+  keeps running).
+- CLI: **`pictograph explore datasets | dataset | models`** (`--search`, `--class`, `--task`,
+  `--sort`, `-n`; the table's REF column is what the next command takes, never wrapped), and
+  **`pictograph datasets import-public <org/dataset> [--name] [--no-wait]`** /
+  **`datasets import-status <import-id> [--wait]`**. `pictograph models fork` also takes one
+  `org/model` argument (the REF `explore models` prints) besides `ORG MODEL`.
+
+## [1.69.123]
+
+### Added
+- **`pictograph train quote` / `client.training.quote(...)`**: check and price a training run
+  without starting it. It takes `train start`'s arguments (no name), runs every check a start
+  runs - so it fails the same way, with the same exit code - and returns the GPU the run
+  would use, what `--gpu auto` picks, whether the config's predicted peak memory fits each
+  tier and each tier's live price per minute, how much of each class the export can train
+  on (a class with nothing to train on is named), the estimate the app's training dialog
+  shows (`estimate.total_micro_usd`; a run is billed once, on success, for the GPU time it
+  used), the balance, `can_start` and what blocks a start (`blocking`: the balance, the key's
+  role, a key whose creator was removed). Writes nothing, charges nothing, any role may ask;
+  a quote that cannot start still exits 0 and says why on stderr. Async twin
+  `AsyncTraining.quote`; models `TrainingQuote` and friends; agent tool
+  `quote_training_run`.
+- **`--json` is accepted by every command.** A command that only ever prints JSON takes it
+  and changes nothing (it used to refuse it: "No such option: --json", exit 6 - an agent
+  that passes `--json` everywhere hit that on `images list` and `annotations get`); one that
+  prints a sentence or a table now has a real `--json`: `datasets delete / freeze /
+  restore`, `images delete`, `notifications unread-count / read / read-all / delete`,
+  `train logs`, `augment ops`, `agents list-tools` (every tool, full description and cost in
+  micro-USD), `agents export-tools --output`, `init`, `login`.
+- `train start --gpu auto` is documented (`--help` names it), and `train start` / `train
+  quote` take `--config` as a JSON object or the path to a JSON file (a downloaded
+  `config.json` works); a malformed value is a usage error (exit 6) naming `--config`.
+- The agent tool `auto_annotate_dataset` takes `directory_path` (one folder) and `model` (a
+  trained model instead of SAM3), as `pictograph auto-annotate dataset` does; `classes` is
+  optional with a model. `train_pipeline` takes `gpu="auto"`.
+
+### Fixed
+- The agent tool `train_pipeline` told agents it "creates a timestamped export"; training
+  runs off an export the caller names, and the tool has not made one since July 2026. Its
+  description now says to create (and review) the export first and to quote the run.
+- `AsyncTraining.create`'s docstring said it deducts the estimated cost up front; training is
+  charged once, on success.
+
+## [1.69.122]
+
+### Added
+- **`pictograph annotations import-coco / import-yolo / import-voc`**: import a COCO file, a
+  folder of YOLO `.txt` labels or a folder of Pascal VOC `.xml` files onto a dataset that
+  already holds the images (folders are searched recursively; two label files with one name
+  are refused). YOLO's class list comes from `--classes` (a `data.yaml`, `classes.txt` or
+  `obj.names` file, or `car,truck,bus`), else from the first of those files in the label
+  folder or the two above it (where Ultralytics and Roboflow exports put `data.yaml`; read
+  without PyYAML too). A label that numbers a class past the end of the list is refused
+  before anything is sent - it used to be dropped without a word. A VOC file lands on the
+  image its `<filename>` names. The report (`images_saved`, `annotations_saved`,
+  `unmatched_files`, `failures` with a reason each) prints on stdout; a failed file exits 1,
+  nothing matching exits 4. `datasets import-coco` stays as the same command.
+- **`pictograph models versions / set-version / files / download-file`**: list a model's
+  versions with each one's headline metric and which is served, roll back or forward to one
+  (`set-version MODEL 2`, a label, `v2` or an id; `--clear` follows the newest ready version
+  again), list the files of the served version or any (`--version`, `--all-versions`; ONNX,
+  PyTorch, fp16, TensorRT, ExecuTorch, config.json), and download one by name.
+- **`pictograph annotation-comments list / add / reply / edit / resolve / delete`**: the notes
+  on an image's annotations from the CLI (`list --unresolved` shows the open threads).
+
+### Fixed
+- **An annotation import never guesses which image a file is for.** A label file matches the
+  image with its exact name, else the one image with its stem - `a.txt` (YOLO) and `a.xml`
+  (VOC) now match `a.jpg`; before, only an exact name did, so a YOLO folder matched nothing.
+  When two images share the name (`a.jpg` in two folders, or `a.jpg` and `a.png`), the file
+  is reported in `failures` and neither image is touched; before, the import REPLACED the
+  annotations of whichever image happened to be listed last. A second file for an image
+  already matched is reported the same way.
+- An import's rejected save names the file it came from, not the image's id.
+- An import's missing classes are added to the dataset's classes (sent with `classes_base`),
+  so a class someone added meanwhile is kept instead of being replaced.
+
+## [1.69.121]
+
+### Added
+- **Bulk image changes from the CLI:** `pictograph images move` (`--to /folder`; a name already
+  there gets `-1`), `images copy` (`--to`, `--duplicates rename|skip|overwrite`,
+  `--with-annotations`), `images set-status --to new|annotate|review|complete`, `images archive`
+  (asks first; `--yes`) and `images restore`. Each acts on exactly one selection: `--images`
+  (UUIDs), `--from-file ids.txt` (or `-` for stdin), filters (`--directory`, exactly that folder;
+  `--status`; `--split`) or `--all` - nothing is selected by default, so a typo never means every
+  image. `--dry-run` prints the count and the first ids. A selection over 10,000 images runs as
+  several calls, added up into one report (`selected`, `processed`, `failed` with a reason per
+  image, `affected_directories`); some images failing exits 1. `restore`'s filters select among
+  the archived images.
+
+### Changed
+- A "not found" on the CLI names the command that lists what exists
+  (`pictograph datasets list`, ...) instead of the SDK's Python advice (`.iter()`).
+
+## [1.69.120]
+
+### Added
+- **`pictograph classes list / add / update / remove`** - a dataset's classes from the CLI:
+  list them (name, type, colour, attributes, joints; `--json`), add one with `--type box |
+  polygon | polyline | keypoint | tag` (`bbox` accepted for `box`), `--color`, `--attributes
+  file.json`, `--skeleton file.json` (a keypoint class's joint template), change a class's
+  colour, attributes (`--clear-attributes`) or skeleton, and remove one (the same as
+  `annotations delete-class`; `--type bbox` now reaches the stored `box` class). A class is its
+  name AND its type; `--type` picks one when a name has several. Every change reads the list,
+  edits it and sends what it read as `classes_base`, so a class someone added in the app
+  meanwhile is kept.
+- **`pictograph datasets update --readme FILE`** (or `-` for stdin): replace the dataset card.
+- `client.datasets.update(..., classes_base=...)`: the class list you read. With it the edit is
+  merged onto the stored list instead of replacing it (sync and async).
+- **`DatasetClass.skeleton`** (`SkeletonTemplate`: `nodes` of `SkeletonJoint(name, x, y)`, 0-indexed
+  `edges`), exported from `pictograph`.
+
+### Fixed
+- A keypoint class's joint template was dropped on read (`DatasetClass` had no `skeleton`), so
+  `datasets.update(classes=ds.classes ...)` - a full replace - erased it. The template now
+  round-trips, and the developer API accepts it on a write (it refused the key before).
+
+## [1.69.119]
+
+### Added
+- **`pictograph auto-annotate dataset <dataset>`** drafts labels for a whole dataset, or one
+  folder of it (`--directory /val`, exactly that folder): SAM3 finds the `--classes` you name
+  (`"car:bbox,person:polygon"`), or `--model` runs a trained model (classes optional). Images
+  that already have annotations are skipped unless `--overwrite`, which adds the new drafts
+  beside them. `--limit`, `--confidence`, `--sahi` / `--sahi-slice-size`, `--no-wait`,
+  `--timeout`, `--json` (the whole report). It prints what it drafted, skipped and held back,
+  the annotations added and the job's id, says to review the drafts before training (least
+  certain first: `images list --min-confidence-lt 0.5`), and exits with the batch's own error
+  code when the job cannot run (7 out of credit, 1 a job that ended failed, 10 a wait that ran
+  out), still printing the report. Before it, drafting a dataset meant `auto-annotate batch
+  --images` with every filename on the command line.
+- `client.auto_annotate.dataset(...)` takes `directory_path`, `model`, `sahi`,
+  `sahi_slice_size` and `wait` (``False`` submits and returns with `job_id` set).
+  `AnnotateReport.job_status` is the job's status when the call returned;
+  `AnnotationFailure.error_type` / `.code` keep the class and code of the error that stopped
+  the batch.
+
+### Fixed
+- `client.auto_annotate.dataset` read the dataset with one request capped at 10,000 images, so
+  a bigger dataset was drafted in part - and one whose first 10,000 images were annotated was
+  reported as having nothing to draft. It now pages through every image.
+- The report names the batch job even when the wait runs out or the job ends failed (it
+  submits, then waits), so the job can still be followed or looked at.
+
+## [1.69.118]
+
+### Added
+- **CLI failures an agent can branch on.** Every failure exits with one code per kind: `1`
+  failed (a job that ended failed or cancelled, inputs of a batch that failed, a declined
+  confirmation), `2` no API key or the key refused, `3` forbidden (role or plan), `4` not found,
+  `5` conflict (exists, a dataset in cold storage, a job not finished), `6` invalid input (a bad
+  flag or value, a missing or malformed file, a request the API refused), `7` not enough compute
+  credit, `8` rate limited, `9` server error or network, `10` a `--wait` that ran out while the
+  job keeps running, `130` interrupted. Until now every SDK error exited 1 and a usage error 2.
+- **A JSON error.** With `--json`, or `PICTOGRAPH_OUTPUT=json` in the environment, a failure is
+  one line of JSON, the last line on stderr: `{"error": {"code", "message", "exit_code", "type",
+  "status", "retry_after", "details", "fix", "docs_url", "request_id"}}`, every key present.
+  `code` is the API's own error code when it sent one (`dataset_cold`, `insufficient_credits`)
+  and otherwise the kind's (`not_found`, `usage_error`, `missing_command`, `invalid_input`,
+  `file_not_found`, `job_failed`, `wait_timeout`, ...); `details` carries the 402's credit
+  fields, an invalid request's or file's field errors, a failed job's `id` and `status`, the
+  parameter a usage error is about, the commands a group takes when none was given.
+- **`PICTOGRAPH_OUTPUT=json`** also turns `--json` on for every command that has it.
+- A failed line of a batch (`models predict`, `deployments predict`, `sam3 predict` over several
+  inputs) carries `error_code`; a batch stopped by an error that would fail every input exits
+  with that error's code (2, 3, 7 or 8) instead of 1.
+- `ApiError.code` is `"job_failed"` or `"job_cancelled"` when a `wait_for_*` helper's job ended
+  without succeeding (`pictograph.exceptions.job_end_code`); the job is still `e.response`.
+- `ValidationError` carries a `fix`, like every other API error.
+
+### Changed
+- A usage error (a missing argument, an unknown option, a value out of range) exits `6`, not
+  click's `2`: `2` now means only "no key, or the key was refused".
+- A malformed annotation or JSON file, or a file that does not exist, is a one-line error
+  (exit `6`) instead of a traceback. An unexpected exception (a bug) keeps its traceback.
+
+## [1.69.117]
+
+### Added
+- **Model evaluation from the CLI.** `pictograph models evaluate <model> --dataset
+  <dataset> --export <export>` scores a model against one of a dataset's exports on Pictograph
+  (`--iou`, `--confidence`; checked against the API's bounds before any request) and prints the
+  new evaluation's id; `--wait` blocks until it finishes and prints its metrics: precision,
+  recall, F1 and mAP per class for a detector or an instance-segmentation model, accuracy for a
+  classifier, pixel mIoU and Dice for semantic segmentation. `pictograph models evaluations
+  [<model>] [--dataset <name>] [--limit N]` lists the organization's evaluations, newest first.
+  `pictograph models evaluation <id>` shows one; `--wait` waits for it, `--report
+  evaluation.json` writes its full JSON report (the app's Download JSON), `--cancel` stops it.
+  Every command takes `--json`. A wait that runs out says the evaluation keeps running and
+  names the command that waits again; a report on an evaluation that has not completed says
+  why instead of the API's 409; an `.html` or `.pdf` report path is refused (the developer API
+  serves the JSON report; the HTML report is built in the app).
+
+## [1.69.116]
+
+### Added
+- **`WorkflowRun.engine_build`** (and on `WorkflowRunSummary`): the TensorRT engines a run builds.
+  The first run of a model on a GPU at a precision builds its engine before any frame (a minute or
+  two) and caches it; later runs on that GPU start in seconds, and the build is not billed. While it
+  builds, a `processing` run's `engine_build.state` is `"building"`: each model (`EngineBuildModel`:
+  `model_id`, `name`, `precision`, `state`, `started_at`, and `estimate_s` - how long builds like
+  it took on that GPU, when it has built others). A run that built engines keeps the record
+  (`"built"`, each model's `build_s`); a run whose engines were cached has `None`.
+
+## [1.69.115]
+
+### Changed
+- **A Model block holds its own precision; a workflow's compute is its GPU.** A Model block's
+  config takes `"precision": "fp32"` (the default, the model as trained) or `"fp16"` (half
+  precision: faster, accuracy-equivalent). `WorkflowCompute` is `{gpu}`; `run()` and `invoke()` take `gpu=` only - the
+  `precision=` keyword is gone, as is the CLI's `--precision` (set it in the graph, or in the app's
+  Model block). The server refuses a `precision` in a compute and says where it lives.
+  `WorkflowRun.compute` / `WorkflowRunSummary.compute` are a `WorkflowRunCompute`: the GPU the run
+  ran on and the precision its model ran at.
+
+## [1.69.114]
+
+### Added
+- **A compute option names its GPU's memory.** `WorkflowComputeGpu.vram_gb` and
+  `DeploymentComputeOption.vram_gb` (`None` on CPU): 16 on a T4, 24 on an L4 - what decides
+  whether a model fits. `pictograph workflows compute-options` and `pictograph deployments
+  compute-options` show it in a `vram` column.
+
+### Changed
+- **A workflow runs on a T4 (the default) or an L4.** The A10G is no longer a workflow GPU: the L4
+  supersedes it for inference (the same 24 GB, newer silicon, a lower rate), as it already had for
+  deployments. `--gpu a10g` / `compute={"gpu": "a10g"}` are refused by the server with the GPUs
+  that remain.
+
+## [1.69.113]
+
+### Added
+- **A workflow's compute: its GPU and its model's precision.** `client.workflows.compute_options()`
+  lists the GPUs a workflow runs on (`t4`, the default; `l4`; `a10g` - the GPUs with a video
+  encoder) with the price of a minute on each, and the precisions (`fp32`, the default; `fp16`,
+  Pictograph's realtime engine's fast mode - accuracy-equivalent, not output-identical; a run on
+  the ONNX runner stays at fp32 and says so in its warnings). `create(..., compute=...)` /
+  `update(..., compute=...)` set a workflow's own; `run(workflow, gpu=..., precision=...)` and
+  `invoke(..., gpu=..., precision=...)` set one run's. A run is billed per measured second at its
+  GPU. New models `WorkflowCompute`, `WorkflowComputeOptions`, `WorkflowComputeGpu`,
+  `WorkflowComputePrecision`; `Workflow.compute`, `WorkflowRun.compute` and
+  `WorkflowRunSummary.compute` say what a workflow and a run run with. Async twins.
+- CLI: `pictograph workflows compute-options [--json]`; `--gpu` / `--precision` on `create`,
+  `update`, `run` and `invoke`.
+
+## [1.69.112]
+
+### Added
+- **A workflow run's log.** A run on PRT writes a log as it runs - each trigger that fired,
+  each capture and its upload, the engine's stats, and on paid plans every frame as Pictograph
+  JSON - and the SDK reads it back: `client.workflows.run_log(run_id, stream="events" | "frames"
+  | "stats", ...)` one page at a time (`next_cursor` until the last), filtered by class, track,
+  confidence, source, event type or trigger; `iter_run_log(...)` pages for you (`max_total`
+  stops early); `run_log_summary(run_id)` counts each stream from the log itself and says
+  whether the plan logs frames (`log_frames`). Async twins on `AsyncClient`. New models
+  `RunLogPage`, `RunLogRecord`, `RunLogSummary`, `RunLogStreamSummary`.
+- `WorkflowRun.has_log` / `WorkflowRunSummary.has_log`: whether the run wrote one.
+- `pictograph workflows log RUN [--stream frames|events|stats] [--limit N] [--newest-first]
+  [--full] [--class C] [--track T] [--min-confidence X] [--source S] [--type T] [--trigger T]
+  [--summary] [--json]`.
+
+## [1.69.111]
+
+### Added
+- **A workflow run names the engine that ran it.** `WorkflowRun.engine` and
+  `WorkflowRunSummary.engine` (and the `engine` column of `pictograph workflows runs`):
+  `"onnx"` (the ONNX runner) or `"prt"` (PRT, Pictograph's realtime engine, on the GPU end
+  to end). A string, never a Literal, so an engine this SDK has not heard of still parses;
+  a server that does not say ran it on ONNX.
+
+## [1.69.110]
+
+### Fixed
+- **A keypoint instance's COCO box is one a detector can learn.** `formats.to_coco` writes
+  an instance's box with no side shorter than 5% of the image's shorter side (when
+  `image_sizes` gives the size), centred on its points and clipped to the image. The
+  enclosure of a lone landmark is a 1 px square, and a box-matched trainer (RF-DETR's
+  IoU-aware class target, the YOLO task-aligned assigner) cannot be taught a box it can
+  never overlap: a landmark model trained on 1 px boxes topped out at about 1% confidence,
+  and COCO's OKS, which scales by the box `area`, needed sub-pixel accuracy. The new
+  `pictograph._keypoint.trainable_bbox` is the backend's `trainable_box`, LOCKSTEP (B543).
+  `instance_bbox` still returns the honest enclosure.
+- **`AsyncClient.images.download` addresses the image by its path**, like the sync client:
+  a bare filename is the dataset's root, `folder/name.jpg` a folder's image, and no lookup
+  is made (a UUID is looked up once and checked to be in the dataset). It used to resolve
+  the name with `images.list` and stream the by-id route (B524).
+
+## [1.69.109]
+
+### Added
+- **CPU deployments from the CLI.** `pictograph deployments create` takes
+  `--compute-type cpu|gpu` (alias `--compute`; default `gpu`) - CPU is the cheapest tier,
+  for a light model - and `--gpu` (default `t4`) applies only to a GPU deployment.
+  `deployments quote` takes the same pair. A CPU deployment with `--gpu`, an unknown
+  compute type, or a GPU tier deployments do not offer is refused before any request.
+
+### Fixed
+- `client.deployments.quote()` (sync and async) defaults `gpu_type` to `"t4"`, as
+  `create` does: a bare `quote()` asked for a GPU deployment without naming one, which
+  the API refused. A CPU quote no longer sends a GPU type.
+- The retired A10G is no longer offered for deployments: `DeploymentGpuType` (the tiers
+  you choose from) is `"t4" | "l4" | "a100"`, the CLI help lists those, and so does the
+  agent tool's `create_deployment` schema. What a deployment REPORTS (`Deployment.gpu_type`,
+  `DeploymentComputeOption.gpu_type`) is read as a plain string, so a deployment made on a
+  retired tier, or a tier added later, still reads. A10G remains a TRAINING GPU.
+
+## [1.69.108]
+
+### Added
+- **Run a workflow on a link or on bytes: `client.workflows.invoke` and
+  `pictograph workflows invoke`.** `invoke(source="https://...")` hands the link to
+  Pictograph, which downloads it into your organization's storage and runs over the
+  copy - nothing passes through your machine (a video up to 1 GB, an image up to 25 MB,
+  within ten minutes). The kind comes from the link's extension; for a link without one
+  pass `{"kind": "video", "url": ...}` (`WorkflowInvokeSource.url`, new). That one
+  request waits up to `URL_INVOKE_TIMEOUT_SECONDS` (720 s) for the download.
+  `invoke(source=<bytes>)` reads whether the bytes are a video or an image from their
+  signature (MP4, MOV, M4V, AVI, MKV, WebM, JPEG, PNG, WebP, BMP, GIF) and uploads them
+  like a file; HEIC / AVIF and anything else raise `ValueError` before any request. The
+  async client takes the same.
+- CLI: `--file` takes a file on disk, a link, or `-` (a video or image piped in);
+  `--video` / `--image` take a storage URI (`gs://...`) or a link. A local path given to
+  `--video` / `--image` is refused with a pointer to `--file` (it used to fail on the
+  server).
+- The transport's `upload_external` takes bytes as well as a path.
+
+### Changed
+- `client.sam3.predict` waits up to 300 s (was 120 s): a first call after a quiet spell
+  starts a GPU, measured at 84 s cold.
+
+## [1.69.107]
+
+### Added
+- **SAM3 on any image: `client.sam3.predict` / `AsyncClient.sam3.predict` and
+  `pictograph sam3 predict`.** Until now SAM3 ran only on an image already in a
+  dataset. `predict(image, text= | box= | points=)` sends the image itself - a path,
+  an `http(s)` URL (fetched on your machine, then uploaded) or bytes - with ONE prompt
+  and returns a `Sam3Prediction`: the annotations, the upright image's `width` /
+  `height` (EXIF orientation applied - the space every coordinate is in), the
+  `image_sha256` the session fee is charged against, the `confidence_threshold` that
+  applied and `degraded` (a crowded image whose matches did not all fit in GPU
+  memory). Nothing is saved. `negative_points` / `negative_boxes` carve regions out;
+  `output="bbox"` returns boxes; `confidence` defaults by prompt (0.3 text, 0.5 box,
+  0.75 points), as on the dataset prompts. A wrong prompt (none, several, a box that is
+  not four numbers) raises `ValueError` before any request.
+- The CLI reads the same inputs as `models predict`: paths, globs, URLs, `-` (stdin),
+  `--video` (the frames a workflow samples) and `--dataset` (read-only), one JSON line
+  per image for several, and it stops a batch at an error that would fail every
+  remaining image (an exhausted balance, a viewer key).
+- Billing: the SAM3 session fee, once per IMAGE (by its bytes) when a prompt on it
+  completes - more prompts on the same image are free, and a failed prompt is free.
+  `pictograph tools describe sam3` shows the price; the card's new `image` mode carries
+  this call's CLI, Python and HTTP lines.
+
+## [1.69.106]
+
+### Removed
+- **Multi-GPU training.** `client.training.create()` (sync and async) no longer takes
+  `gpu_count`: every run trains on one GPU. Replicated-model (DDP) training bought about
+  1.2x wall-clock for about +79% cost on the measured curve; sharded multi-GPU training is
+  on the roadmap instead. The developer API refuses the field (its body is
+  `extra="forbid"`), so an older SDK's `training.create()` must be upgraded.
+
+### Added
+- **`TrainingRun.warnings`** (`list[TrainingRunWarning] | None`): what the run's prep left
+  out of the model and why. A model's classes are exactly the classes its TRAIN split
+  supervises, so a requested class with no annotations of the kind its pipeline trains on
+  (or annotated only in a validation / test split you assigned) is left out, and the
+  run says so - `code="classes_not_trained"`, a `message`, and each class with its
+  `reason`. The model's `class_mapping` lists only the classes it trained on. A run in
+  which no selected class could be trained is refused at `create()` with a
+  `ValidationError` (`no_trainable_classes`).
+
+### Changed
+- **The vendored RF-DETR architecture is re-vendored from rfdetr 1.11.2** (was
+  1.8.3), in lockstep with the training image's new pin. Every model trained on
+  either release rebuilds unchanged: for all eleven variants our pipelines train
+  (detection Nano to Large, segmentation Nano to 2XLarge, Keypoint Preview), the
+  same state dict through the new tree gives eval and export forwards
+  bit-identical (`torch.equal`) to upstream 1.11.2 AND to 1.8.3, with the state-dict
+  keys and shapes unchanged. The tree still needs neither `rfdetr`, `transformers`,
+  `supervision` nor `pyDeprecate`; it now also keeps `requests` and `tqdm` out
+  (upstream's checkpoint-rewriting `strip_checkpoint`, a training utility, is not
+  vendored, see `NOTICE`).
+- `inference._rfdetr.builder` follows 1.11.2's rules: a checkpoint's recorded
+  `device` (the TRAINING host) is never restored, so a GPU-trained checkpoint loads
+  on a CPU machine; a detection XLarge / 2XLarge checkpoint is refused by its
+  weights-file name as well as by `model_name` (it used to substring-match "large"
+  and rebuild as Large with a mismatched head); `RFDETRLargeDeprecated` resolves by
+  name; and `RFDETRModel.predict` resizes with `antialias=False`, rfdetr's own
+  convention since 1.10. (The SDK's `predict()` for RF-DETR runs the shared
+  cv2 preprocess and was already on that convention.)
+- The `[torch]` / `[inference]` extras now require `torch>=2.2` and
+  `torchvision>=0.17`, the vendored release's own floors: its backbone uses
+  `torch.compiler.disable` at import, which older torch does not have.
+
+## [1.69.104]
+
+### Fixed
+- **`model.predict(image, confidence=X)` returns what X asks for, whatever the model was
+  loaded with.** `load_model(..., confidence=0.5)` builds the model at 0.5 and `predict`'s
+  `confidence` overrides it per call, but an RF-DETR (detection, segmentation, keypoints)
+  still gated at the load confidence inside the model before the override applied - a
+  `predict(confidence=0.2)` lost every detection between 0.2 and 0.5 - and a semantic
+  segmentation model ignored the override altogether. The requested confidence now reaches
+  every model on every call, on every local runtime (ONNX Runtime, TensorRT, ExecuTorch),
+  matching Pictograph's servers (deployments and workflows had the same defect, fixed in
+  the same change).
+
+## [1.69.103]
+
+### Fixed
+- **`--limit` on a list command is how many rows you get, however many that is.**
+  `pictograph models list -n 150` sent one request for 150 models and the API, which
+  serves at most 100 a page, answered 422. `models list`, `deployments list`,
+  `train list`, `datasets list` and `exports list` now page through the API until they
+  have `--limit` rows (`images list` already did). The page-oriented commands that take
+  `--offset` (`tasks list`, `credits history`, `webhooks deliveries`) and
+  `notifications list` refuse a page larger than the API serves before sending anything
+  (`--limit` 1-100, or 1-200 for deliveries), instead of passing a 422 back.
+- **`--help` no longer drops a bracketed word.** The help is rendered with Rich, which
+  read `[inference]` as a style tag: `models predict --help` told you to
+  `pip install 'pictograph'`, and `metrics evaluate --help` described its files as
+  `{image: }`. Every such word is escaped, and a test renders every command's help and
+  fails if one goes missing.
+
+## [1.69.102]
+
+### Added
+- **`pictograph models predict` and `pictograph deployments predict` run on a video's
+  frames and on a dataset's images.** `--video clip.mp4 --sample-fps 2` (a path, an
+  `http(s)` URL or `-` for stdin; repeat for several videos) decodes the video on your
+  machine and runs the frames a workflow over the same file samples - every
+  `round(fps / sample_fps)`-th frame, 1 per second by default - printing one JSON line
+  per frame with its `frame` index and `t` in seconds. It needs OpenCV
+  (`pip install 'pictograph[inference]'`), and says so when it is missing.
+  `--dataset my-dataset [--directory /val]` reads one of your datasets' images and prints
+  one line per image with its address (`val/x.jpg`) and `image_id`; it writes nothing.
+  `--limit N` stops after N images or frames. A local model gets each decoded frame
+  itself; a hosted model and a deployment get it as a JPEG.
+- Everything is still checked before the first prediction: a video OpenCV cannot open,
+  a dataset in cold storage (restore it first) or a folder with no images stops the
+  command before the model is loaded.
+- **A batch stops at an error that would fail every remaining input the same way** - a
+  rejected key, a missing role, no credit, or hosted capacity spent for the day (a 429)
+  - with a note on stderr saying what was not run, instead of printing the same error
+  for every image. Any other failure is still just that image's line.
+
+## [1.69.101]
+
+### Fixed
+- **A pose model whose joints are their own classes predicts again in local inference.**
+  Training sizes the RF-DETR keypoint head over every class in the dataset (for the
+  Keypoint Detection Demo: 6 joint classes, so 6 blocks of 6 joints) while the exported
+  keypoint schema names only the object class the poses belong to (1 class, 6 joints).
+  The decoder read 1 block from a 36-slot tensor, the slot arithmetic failed, every pose
+  came back empty, and each detection was then dropped - `predict` returned no points at
+  all, with no error. The decoder now recognises a head padded to the full class list and
+  reads the trained (leading) blocks. Measured on a real 12-epoch model: 0 points on 4
+  demo images before, a full 6-joint pose on each after.
+
+## [1.69.100]
+
+### Fixed
+- **`predict` reads a file whose name contains `[`, `*` or `?` as that file.** 1.69.99
+  read any such argument as a glob, so `frame[01].jpg` - a real file - was treated as a
+  pattern: it either matched nothing ("No file matches") or, worse, matched a different
+  file (`frame0.jpg`) and ran that image instead. A path that exists is now always that
+  file; only an argument that is not an existing file is expanded as a pattern.
+
+## [1.69.99]
+
+### Added
+- **`pictograph models predict` and `pictograph deployments predict` take any image, and
+  several at once.** An image is a file path, a glob (`'frames/*.jpg'`, expanded by the
+  CLI so a quoted pattern works in every shell), an `http(s)` URL, or `-` for image bytes
+  on stdin (`curl ... | pictograph models predict "Shelf Detector" - --remote`). Give
+  more than one, or pass `--jsonl`, and the command prints one JSON object per image, one
+  per line, as each finishes: `{"input", "result"}` or `{"input", "error", "error_type"}`.
+  One bad image does not stop the rest; the exit code is 1 when any failed. Everything is
+  checked first: a pattern that matches nothing or a path that does not exist stops the
+  command before the model is loaded or looked up.
+- `pictograph models predict --top-k` for classification models (1-10).
+
+### Fixed
+- **`client.models.predict(name, image="https://...")` works.** The hosted call read
+  every string as a file path, so a URL raised `FileNotFoundError` - while the CLI's own
+  help said "path or URL". A URL is now fetched on your machine and uploaded, the same
+  as local inference and `DeploymentClient` already did; `AsyncClient.models.predict`
+  fetches it without blocking the event loop. A URL that does not answer 200 with a
+  body raises `ValueError` naming the status.
+- A batch through `pictograph models predict --remote` looks the model up once, not
+  once per image, and an unknown model name stops it before the first upload.
+
+## [1.69.98]
+
+### Added
+- **`client.tools` and `pictograph tools`: ask the platform how to call a vision tool.**
+  SAM3, every ready model, every active deployment and every workflow is a tool.
+  `client.tools.list()` / `pictograph tools list` names them, and
+  `client.tools.describe("model/<name>")` / `pictograph tools describe <tool>` returns
+  that tool's card: what it is, which inputs each way of running it accepts (file, URL,
+  bytes, video, dataset), its parameters with the bounds the API enforces, the shape of
+  one prediction, the exact CLI / Python / HTTP call, and what each costs. The card is
+  generated by the platform from what it stores, so it cannot go stale. `--json` prints
+  it for an agent; without it the CLI prints Markdown. `AsyncClient.tools` is the async
+  twin. New models: `ToolSummary`, `ToolCard` (`pictograph.models.tool`).
+- The `pictograph-cv` skill and the `pictograph init` AGENTS.md teach one habit:
+  list, describe, then run.
+
+### Fixed
+- **Hosted model inference is free, and the SDK now says so.** `client.models.predict`
+  and `pictograph models predict --remote` claimed to spend compute credits. They have
+  not since hosted test inference moved to shared CPU capacity: it is free on every plan,
+  one image per call.
+- `pictograph auto-annotate batch --images` help said 1-500 images; the limit is 5,000.
+
+## [1.69.97]
+
+### Fixed
+- **An export filter of "all" exports every image, not none.** The pictograph-cv skill's
+  `scripts/export.py` and the `create_export` agent tool offered `all` and `in_progress` as
+  `--status-filter` / `status_filter` values and sent them as written. Neither is an image
+  stage, so each built an EMPTY export with no error. `all` now sends no filter, `in_progress`
+  is gone, the real stages (`new`, `annotate`, `review`, `complete`) are offered, and both
+  defaults are unchanged.
+- **`pictograph init` writes an AGENTS.md whose commands run as written.** `train start` takes
+  the export as its second argument, there is no `python -m` path through the hyphenated skill
+  package, and it names only files the skill ships. Its loop: auto-annotations are drafts a
+  person reviews, then export the dataset and train on the export.
+- **The skill** installs `pictograph[cli]` (the CLI is that extra) and says auto-annotations are
+  drafts a person reviews before you export; an agent never approves its own drafts unless the
+  user says so.
+
+## [1.69.96]
+
+### Changed
+- Docstrings and messages only, no behavior change: `bulk_resume` no longer says "(paid
+  tier)" (deployments run on every plan, Free included); `Deployments.create`,
+  `CreatedDeployment.auth_token`, the `deployments create` CLI note and the API key's
+  `api_key` field no longer say the secret is "shown once" (the API returns it only at
+  create, and a member can reveal it again in the app); `PaymentRequiredError` is the 402 for
+  compute credit only, a plan-gated feature is a 403 `ForbiddenError`.
+
+## [1.69.95]
+
+### Fixed
+- **`auto_annotate.dataset` addresses each image by its id.** A filename is unique per
+  FOLDER, not per dataset. The batch mode sent the names of the images to annotate, and
+  the server matched every image with that name - so with the default `overwrite=False`,
+  an unannotated `b/x.jpg` also sent an already-annotated `a/x.jpg` to be annotated (and
+  charged) again. The text mode prompted SAM3 by name, which could run on a same-named
+  image in another folder, then saved those masks onto this image. Both now send the id.
+- **`auto_annotate.point` / `box` / `text` / `batch` / `quote` take an image's id or its
+  path inside the dataset (`"val/x.jpg"`) as well as its filename** (server-side, no
+  signature change). An id or a path names exactly one image. A bare filename on a single
+  prompt resolves dataset-root first, deterministically (it was an arbitrary first match);
+  in a batch it still names every image of that name. Docstrings and the agent tool
+  schemas say so.
+
+## [1.69.94]
+
+### Fixed
+- **An image UUID can no longer act on an image in another dataset.** Every per-image
+  call that takes a dataset and an image (`images.delete` / `review` / `set_split` /
+  `download` / `download_bundle` / `get`, `annotations.get` / `save` / `delete`, the
+  annotation comments, `search.by_similarity`, sync and async) accepts the image's UUID
+  as well as its filename. The UUID was looked up across the whole ORGANIZATION and then
+  re-addressed under the dataset the call named - so a UUID from dataset A passed with
+  dataset B reached B's image at the same directory and filename (a copy or a fork keeps
+  both), and `images.delete(..., permanent=True)` or `annotations.save` acted on THAT image.
+  The image is now checked to belong to the named dataset and the call raises
+  `NotFoundError` otherwise. A dataset given by id costs no extra request; by name, one.
+- **The image-argument descriptions say what the routes accept.** The per-image routes
+  address an image by PATH: a bare filename means the dataset root, so an image in a
+  folder needs `directory/filename` (or `directory_path=` on the annotations calls). The
+  CLI help, the agent tool schemas and the annotations docstrings had promised a bare
+  filename works anywhere.
+
+## [1.69.93]
+
+### Fixed
+- **`credits.estimate`'s documented example slugs are real.** The docstring, the CLI help
+  and the `estimate_credit_cost` agent tool named `image_generate_imagen_fast`, an Imagen
+  slug the server has answered `400 Unknown operation` since Imagen 4 was retired
+  (2026-09-08). They now name Gemini 3.1 Flash - the app's default image model -
+  `image_generate_gemini_3_1_flash` / `image_edit_gemini_3_1_flash`. The live estimate
+  test, which still estimated the Imagen slug, covers both. `CreditLedgerEntry.operation`'s
+  description gives real ledger operations (`image_generate`, `image_edit_gemini_flash`).
+
+## [1.69.92]
+
+### Fixed
+- **`images.get(dataset, <image id>)` works.** Given an id, the synchronous client fetched
+  `/images/{id}`, which serves the image's BYTES (the exports `image_url` route), and parsed
+  them as JSON - every call raised `UnicodeDecodeError` on the file's first byte. It now reads
+  `/images/{id}/metadata`, the route the async client already used. Getting an image by
+  filename was never affected.
+
+## [1.69.91]
+
+### Fixed
+- **An organization invite can be `declined`.** The invitee can now decline an invite (the
+  web app's invite modal declines it on the server; until now its Decline only hid the modal
+  and the invite stayed pending). `InviteStatus` gains `"declined"`, so listing an
+  organization's invites never fails to parse a declined one.
+
+## [1.69.90]
+
+### Fixed
+- **`auto_annotate.batch()`, `get_batch()`, `wait_for_batch()` and `cancel_batch()` work
+  again.** From 2026-08-01 the API answered these with the job's id under `job`, while the
+  SDK required `job_id`, so `batch()` raised a `ServerError` on every call - after the job had
+  been created, charged and started. The API sends `job_id` again (beside `job`), and the SDK
+  now accepts either key, so it works against any server build.
+- **`video.extract_frames()` / `get_extraction()` / `wait_for_extraction()`** - the same
+  fault (`job` instead of `job_id`), the same fix.
+- **`connectors.import_()` / `get_import()` / `cancel_import()`** - the import's id came back
+  as `job` instead of `import_id`, so `import_()` raised a `KeyError` once the import had
+  begun. Both keys are accepted now.
+- **Polling a cancelled V7 import no longer fails to parse.** The import worker records a
+  dataset cut short by a cancel as `"cancelled"`, which `DatasetImportStatus` did not allow.
+
+## [1.69.89]
+
+### Added
+- **`models.fork(organization, model, *, name=None)`** (sync and async) and
+  **`pictograph models fork ORG MODEL --name NAME`** name the copy in your organization.
+  Omitted, the copy takes the source's name; a name already in use is suffixed
+  (`"Name (2)"`), so read the returned model's `name`.
+
+### Changed
+- **A forked model is a complete local copy.** The fork now arrives as version 1 of its own
+  lineage with the source's weights (by reference, no byte copy), classes, metrics, training
+  config, precision, license and demo, so it works everywhere your own models do - batch
+  auto-annotation, workflows, deployments, evaluation, and `models.download()` /
+  local inference, which returned a dead link for every fork.
+- The source can be named by its **slug or display name** (the docstring always said so; the
+  API now accepts both). A private, not-ready or absent source is one `NotFoundError` - the
+  docstring used to promise a `ValidationError` for a not-ready one.
+
+### Fixed
+- **`auto_annotate.batch(..., model=...)` runs the model you name.** The API resolved the
+  model id you sent and then ran SAM3 on the job instead (charged as a trained-model job);
+  it now validates the model the way the app does and runs it.
+
+## [1.69.88]
+
+### Added
+- **`api_keys.update(..., clear_rate_limit=True)`** (sync and async) removes a key's
+  per-key cap, so the key follows its plan's limit again. `rate_limit=None` means "leave
+  it unchanged", like every other field of `update`, so there was no way to take a cap
+  off once set. Passing both `rate_limit` and `clear_rate_limit` raises `ValueError`.
+
+### Changed
+- **An API key's `rate_limit` is its plan's limit, or a LOWER per-key cap.** The API now
+  reports the limit a key actually gets (Free 2,000 / Core 5,000 / Pro 20,000 / Team
+  50,000 / Enterprise 100,000 requests per hour), and `rate_limit` on `create` /
+  `update` can only hold a key below its plan, never raise it. The `create` docstring
+  listed wrong per-tier numbers (Free 1k, Team 100k); it now links to
+  https://pictograph.io/docs/rate-limits instead of restating them.
+
+## [1.69.87]
+
+### Fixed
+- **Local inference (`pictograph.inference`) read `class_filter=[]` as "keep nothing"**, so a
+  call with an empty class list returned no predictions, for every model type. An empty
+  filter now means every class, exactly like `None`, matching the server: the vendored
+  inference dispatcher is re-synced from the canonical wrappers, which carry the same fix
+  for the workflow runner and batch inference (`class_filter_set`). The `DeploymentClient`
+  `class_filter` docstring now says `None` or `[]` returns every class the deployment is
+  configured to return.
+
+## [1.69.86]
+
+### Fixed
+- **The Anthropic example in the `pictograph.agents.claude` docstring used `model="claude-opus-4"`,
+  a model id the API does not resolve**, so the example failed as written. It now uses
+  `claude-opus-5-5` (Claude Opus 5.5). Documentation only; no behavior change.
+
+## [1.69.85]
+
+### Fixed
+- **`PaymentRequiredError.credits_remaining` was `None` instead of `0` when an
+  organization was drained to exactly `0` micro-USD** - the single most common 402.
+  The credit-field extractor coalesced across the (envelope-details, top-level,
+  nested-detail) sources with an `or`-chain, so a legitimate, meaningful `0` was
+  treated as falsy and discarded (`0 or None or None → None`). Caller code that
+  formats the balance (`f"${e.credits_remaining/1e6:.2f}"`) raised `TypeError` on
+  the exact case it most needed to handle. Now coalesces on "first not-None".
+- **`iter(..., page_size=N)` with `N` above the backend's page cap silently dropped
+  every row past the first page.** When the backend caps `page_size` (it hard-caps
+  at 1000) it returns a SHORT page but sets `pagination.has_more=True`; the pager's
+  "short page = last page" heuristic fired first and stopped, so
+  `client.images.iter(dataset, page_size=5000).all()` on a >1000-row collection
+  returned only 1000 items with no error. The heuristic now yields to an explicit
+  `has_more=True` (both the sync `OffsetPager` and the async twin); a legacy
+  envelope with no `pagination` object keeps the round-trip-saving heuristic.
+
+## [1.69.84]
+
+### Added
+- `client.workflows.invoke(...)` now accepts a **local file path** as its `source`
+  (WF-D local-file mode): a local video/image is streamed straight to storage via a
+  signed PUT URL (no API hop) and the workflow runs over it - `invoke("wf",
+  source="clip.mp4")`. New `client.workflows.upload_source(local_path)` (sync + async)
+  exposes the upload step directly (upload once, invoke many); new `WorkflowUploadInfo`
+  model; `pictograph workflows invoke --file clip.mp4`.
+
+## [1.69.83]
+
+### Added
+- `client.workflows.invoke(workflow, source=..., wait=...)` (and the async twin
+  `aclient.workflows.invoke`) plus `pictograph workflows invoke` - run a SAVED
+  workflow on-demand over a source given AT CALL TIME, without editing the
+  workflow's stored source node (the workflow-DAG equivalent of a model
+  deployment's `/predict` endpoint). Slice-1 source modes via the new
+  `WorkflowInvokeSource` model (`extra="forbid"`): a `dataset` (name/uuid, optional
+  `directory_path`) in your org, or a `video`/`image` `gcs_uri` you own (validated
+  server-side to your org's prefix). Charge-on-success like `run` (a failed or
+  cancelled run is free); `wait=True` polls client-side to the terminal run.
+
+## [1.69.70]
+
+### Added
+- **Annotation comments become a threaded, reactable channel.** `AnnotationComment`
+  gains `parent_comment_id` (two-level reply threading), a grouped `reactions` list
+  (new `AnnotationCommentReaction`, carrying `reaction`/`count`/`reacted`), soft-delete
+  (`is_deleted` keeps a comment's place in the thread with an empty `body`),
+  `is_edited`, and resolve attribution (`resolved_by` / `resolved_by_name` /
+  `resolved_at`). The `annotation_comments` resource and its async twin add
+  `reply()`, `react()`, `unreact()`, and `create(parent_comment_id=...)`.
+  `AnnotationCommentReaction` is exported from the top-level package.
+
+## [1.69.69]
+
+### Added
+- **`annotator` organization role.** `OrganizationRole` and `InviteRole` add
+  `annotator`, a member-minus role that can annotate, soft-archive, and download
+  within the datasets and directories an owner/admin grants it, but cannot
+  create/delete datasets, manage API keys, upload, or permanently delete.
+  `organizations.invite(role="annotator")` is now accepted. `annotator` and
+  `viewer` are scoped to specific datasets/directories set in the web app.
+
+## [1.69.68]
+
+### Fixed
+- **The vendored YOLOX inference wrapper no longer crashes on extreme-aspect-ratio
+  images.** Each letterbox target axis is clamped to at least 1px, so a very wide or
+  tall image (a panorama or a receipt strip) whose short side would round to zero no
+  longer aborts `cv2.resize` with `(-215) !ssize.empty()`. Re-synced from the
+  canonical Modal wrapper (B403). No behavior change for normally-proportioned images.
+
+## [1.69.67]
+
+### Changed
+- **The rest of the prototype residue is out of the inference wrappers.** The
+  same shape found in the classifier last release was in three more files:
+  `RFDETRConfig` and `RFDETRSegConfig` (the latter defaulting its class map to a
+  customer's vehicle/windshield classes, both pointing `model_path` at a local
+  file that never existed here), and a dead `Detection`, `Metrics` and
+  `SemanticSegmentationModel` in the YOLOX wrapper - the last shadowing the real
+  semantic-segmentation class in a different module. With them went
+  `process_detections`, `process_instance_segmentations` and
+  `InstanceSegmentation`, and the module docstrings that told you to
+  `from data_objects import ...`, a module that only exists in prototype
+  workspaces. Nothing referenced any of it. No behaviour change.
+- A new gate keeps it out: every public symbol in a wrapper must be exported,
+  referenced in the SDK, or used by another wrapper, and no wrapper may hard-code
+  a local model path or import from the prototype module. References are resolved
+  through the AST rather than by text search, because `Detection` and `Metrics`
+  both look used when you grep - those words appear in ordinary prose, which is
+  how they survived an earlier cleanup.
+
+## [1.69.66]
+
+### Changed
+- **The classification wrapper is construction and preprocessing only.** It
+  carried a `PytorchClassifierConfig` whose defaults were one developer's local
+  model path and a nine-class candy dataset, plus a `from_config`, a
+  `Classification` result model, `predict`, `predict_batch` and `postprocess` -
+  none of which anything called. Both real callers drive the ONNX session
+  directly so they can batch across images and apply their own top-k, threshold
+  and class-filter policy, which means that dead code was a second decode path
+  waiting to diverge from the one actually in use. Removed; the class went from
+  253 lines to 107. `Classification` is no longer exported from the private
+  `_wrappers` package. No behaviour change - nothing referenced any of it.
+- The classifier's execution-provider default is a tuple rather than a shared
+  mutable list, and now includes CUDA. The config object it used to live on
+  omitted CUDA, so anything constructed from it would silently have run on CPU.
+
+### Fixed
+- README examples now match the documented flow exactly, and are bound by a test
+  that resolves every call against the real client.
+
+## [1.69.65]
+
+### Fixed
+- **The bundled Claude skill ships its four wrapper scripts again.** The published
+  1.69.64 wheel and sdist contained `SKILL.md` and the reference pages but an empty
+  `scripts/` directory, so `pictograph agents install-skill` installed a skill whose
+  own instructions pointed at `scripts/train.py`, `scripts/export.py`,
+  `scripts/upload_and_annotate.py` and `scripts/import_connector.py` - none of which
+  were there. Reinstall on this version to repair an existing install.
+- **`from pictograph import AsyncClient` is typed again.** The lazy-import shim that
+  keeps `import pictograph` fast had no type-checker counterpart, so every lazily
+  exported name resolved to `object`: under mypy, `AsyncClient()` failed with
+  "object not callable" and its attributes were untyped. Affected the documented
+  async entry point in a package that ships `py.typed`. Runtime behaviour, including
+  the laziness, is unchanged.
+- `deployments.create(...)` example now reads the bearer token from `auth_token`.
+  There is no `token` attribute; the example crashed on the line that prints a token
+  the API only ever returns once.
+
+### Security
+- **`datasets.download()` cannot be steered outside `output_dir`.** The per-image
+  filename in the server's listing was joined into the local path unmodified, so an
+  absolute value discarded `output_dir` entirely and `../` escaped it. Both the sync
+  and async paths now reduce it to a single component. Ordinary filenames, including
+  ones with spaces or parentheses, are byte-identical to before.
+- **`pictograph agents install-skill` validates `--skill`.** The value was joined to
+  `~/.claude/skills` and the result passed to a recursive delete, so `--skill ..`
+  removed the user's entire `~/.claude` directory. Only a plain name is accepted.
+- The local weights cache reduces the server-supplied model id and version to safe
+  path components, matching the guard the PyTorch loader already applied.
+
+### Changed
+- **Live tests need `PICTOGRAPH_TEST_KEY` and are deselected by default.** They were
+  collected by a bare `pytest` and unlocked by `PICTOGRAPH_API_KEY` - the variable
+  every user exports for ordinary use - so running the suite in a clone could spend
+  real credits against production. They now require a dedicated test-organization key
+  and an explicit `-m live`.
+- Removed the `cache` and `telemetry` extras. Nothing in the package imported
+  `aiosqlite` or `opentelemetry`, so `pip install "pictograph[all]"` was pulling three
+  packages that did nothing. `[all]` is now `agents,cli,inference`.
+
+## [1.69.64]
+
+### Fixed
+- **`pictograph directories list` / `tree` / `create` name their first argument
+  `DATASET`, and its help says "Dataset name."** All three previously advertised
+  a dataset UUID, which was simply wrong - the commands have always taken a
+  name, and their sibling commands (`stats`, `delete`, `rename`) already said so.
+  Positional, so how you invoke them is unchanged; only `--help` was wrong.
+
+## [1.69.63]
+
+### Added
+- **`images.download_bundle(dataset, image, path)`** - fetch one image's data
+  bundle as a single zip: the original bytes, its depth map when one exists, its
+  annotations as Pictograph JSON, and a `manifest.json` naming exactly what is
+  and is not inside. It is byte for byte the archive the annotation editor's
+  "Image data" button hands over. A missing depth map is not an error - the zip
+  still arrives and the manifest records the omission and why. Writes atomically
+  like `download()`, so a failed transfer leaves no partial zip and retrying is
+  safe. CLI: `pictograph images download-bundle`; async twin included.
+
+## [1.69.62]
+
+### Changed
+- **Response models expose `dataset_id` (and a Task's dataset name as
+  `dataset`), not `project_id`/`project`.** The developer-facing primitive is a
+  *dataset*; `project` was an internal name that had leaked into the surface.
+  Renamed on `Task`, `Export`, `ModelEvaluation`, `TaggedImage`, `Directory` and
+  `DatasetImportProgress`. **Zero-break on the wire:** each field accepts either
+  key, so this build parses today's API unchanged, and `model_dump()` emits the
+  canonical `dataset_id`. Code still reading `.project_id` now fails loudly
+  instead of silently diverging. Request-side query params are unchanged.
+
+## [1.69.61]
+
+### Changed
+- **`project` is gone from user-facing text across the developer surface.**
+  Docstrings, CLI `--help`, Pydantic field descriptions, the agent tool-arg
+  schemas and the bundled Claude skill all say *dataset* now. Prose only; no
+  field, wire or behaviour change.
+
+## [1.69.60]
+
+### Changed
+- **Internal codenames removed from two public model docstrings.**
+  `ModelVersionsPayload` and `WorkflowRunCreated` carried internal tracker
+  references in text that surfaces under `help()` and in the online API
+  reference. Meaning unchanged; no API, field or behaviour change.
+
+## [1.69.59]
+
+### Added
+- **`client.tasks`** - read your organization's annotation tasks. `list()` and
+  `iter()` page them newest first; `contributions(task_id)` returns the
+  per-annotator breakdown (active time, images worked, images completed,
+  annotations added) alongside the task's totals. CLI: `pictograph tasks list`
+  and `pictograph tasks contributions`; async twin included.
+
+## [1.69.58]
+
+### Changed
+- **A cold-storage restore is charged on success, not up front.**
+  `datasets.restore()` used to bill the restore fee the moment the transition
+  was accepted, so a restore that failed part-way or was abandoned still cost
+  you. The fee now settles only after every object is warm; a failed or
+  cancelled restore costs nothing. `DatasetStorageTransition.charged_micro_usd`
+  is accordingly now `quoted_micro_usd` - the amount that *will* be charged on
+  success. Your balance is still checked before the restore starts, so an
+  underfunded restore is refused rather than left half-done, and the charge is
+  still idempotent per frozen generation.
+
+## [1.69.57]
+
+### Added
+- **Custom auth headers on a webhook endpoint.** `webhooks.create()` and
+  `.update()` take `auth_headers={"Authorization": "Bearer …"}` - headers sent
+  on every delivery, so your endpoint can sit behind your own gateway. They
+  complement the delivery signature rather than replacing it: the header gates
+  who can *reach* the endpoint, the signature proves who *sent* the payload.
+  Values are stored encrypted and are never returned by `list()` / `get()` -
+  only their names, as `auth_header_names`. Pictograph's own headers are layered
+  on top at send time, so a custom header can never clobber the signature.
+  CLI: `--auth-header 'Name: Value'`, repeatable.
+
+## [1.69.56]
+
+### Changed
+- **The five synchronous-only resource methods now say so in their docstrings.**
+  `datasets.as_pytorch`, `models.load`, `images.augment`, `images.tile` and
+  `auto_annotate.dataset` exist on `Client` but not on `AsyncClient`, so an
+  async caller used to meet the asymmetry as a surprise `AttributeError`. Four
+  are CPU- or GPU-bound (a torch `Dataset`, a local weight load, sequential
+  deterministic Pillow work) where `asyncio` would add nothing. No behaviour
+  change.
+
+## [1.69.54]
+
+### Security
+- **The API key is pinned to the configured API host and can never be sent to a
+  server-supplied one.** The authenticated client attaches `X-API-Key` as a
+  default header, so every request it makes carries your credentials - including
+  requests to absolute URLs that came *from* the API, such as the
+  `annotation_url` in a dataset `download()` listing. A malicious or compromised
+  API could have pointed one at another host and had the key delivered there.
+  The transport now reduces any absolute URL to its path and query and
+  re-resolves it against `base_url`, so a server-supplied scheme or host is
+  ignored; a foreign host is logged at WARNING. Enforced once in the transport,
+  not per call site. Normal operation is unchanged. Signed-URL image and model
+  transfers were already safe - they use separate unauthenticated clients.
+
+## [1.69.52]
+
+### Changed
+- **No emoji in the shipped source, enforced by a test rather than a one-time
+  sweep.** The published package is read by anyone, so its source is now checked
+  on every `pytest` run. Typography stays allowed (the ASCII arrow, middle dot,
+  `->`, `!=`). Two user-visible consequences: the CLI renders boolean cells as
+  `yes`/`no` instead of dingbats, and a skill-reference heading dropped a warning
+  emoji. Internal references were also removed from the vendored YOLOX `NOTICE`;
+  its Apache-2.0 provenance and re-diffable-mirror statement are unchanged.
+
+## [1.69.51]
+
+### Added
+- **Runnable `examples/`.** Seven self-contained scripts - quickstart, every
+  annotation geometry type, directory upload, search, predict, train + deploy
+  (GPU work gated behind an env flag), and an async twin. Each generates its own
+  demo images, so it runs with only `PICTOGRAPH_API_KEY` set, and each is
+  idempotent - re-running reuses the dataset it made. A gate parses every example
+  and binds each `client.<resource>.<method>` call and each
+  `from pictograph import …` name against a real client, so a rename breaks the
+  build here rather than in your first script.
+
+## [1.69.43]
+
+### Changed
+- **`folders` is now `directories`, everywhere.** The resource, its async twin,
+  the models, the CLI command group and every argument. `client.folders` is
+  gone; `client.directories` replaces it. The server renamed at the same time,
+  so 1.69.42 and earlier call an endpoint that no longer exists.
+- **Models are addressed by `name=`.** `get_model(name_or_id=…)`,
+  `models.predict(model=…)` and `models.load(model=…)` all take `name=` now,
+  matching the seven `models.*` methods that already did. `name_or_id` was the
+  worst of the three: it advertised that an id would work, which is exactly what
+  the name-addressed API removes.
+
+### Fixed
+- **A checkpoint can no longer execute code when it is loaded.** `torch.load`
+  fell back to `weights_only=False` whenever the safe unpickler refused, logging
+  it at `debug` (off by default). That runs whatever the file's author embedded,
+  and models can be FORKED between organizations, so a `.pth` is not always
+  yours. The inert types our own checkpoints carry are allowlisted so the safe
+  path succeeds, and anything beyond it raises `UnsafeCheckpointError` instead of
+  executing.
+- **Package metadata pointed at a GitHub organization that does not exist**
+  (`pictograph-labs`), so Repository, Changelog and Issues were dead links on
+  every published version. Corrected to `pictograph-io`.
+- **The directories resource called routes that no longer exist** - the
+  id-addressed list and tree paths, retired when the API moved to names.
+- **Cache paths built from server-supplied values are sanitised.** A model id or
+  filename from the API was interpolated straight into a filename, letting a
+  malicious or compromised server steer a write outside the cache directory.
+- **Source-provider credentials are no longer required on `argv`.** The CLI's
+  `connectors --key` and the bundled skill's `import_connector.py` now prefer
+  `PICTOGRAPH_SOURCE_KEY`; argv persists in shell history and is readable by any
+  local user via `ps`.
+
+### Removed
+- **Customer cloud-storage (`client.storage`).** Untested and never exercised by
+  a customer, and it held the highest-consequence secret in the product: a live
+  credential to somebody else's cloud account.
+- 3,668 lines of dead code from the vendored inference wrappers; `yolox_wrapper`
+  alone was 76% unreferenced.
+
+## [1.69.16]
+
+### Fixed
+- **`build_result`'s `source` no longer calls every model a "Classifier".** The
+  one local call site hard-coded `Classifier {name}` for all five tasks, which
+  was invisible while the only message that read it was the classifier's own
+  refusal. 1.69.15 added a second reader and it started telling detector users
+  their detector was a classifier.
+
+## [1.69.15]
+
+Three local-inference defects, all found by EXECUTING the Use Model panel's real
+emitted snippets against the live API rather than asserting on the emitted
+string. None was reachable from a payload fixture, and the first was shipped and
+user-visible.
+
+### Fixed
+- **A native-container YOLOX raised on Apple silicon under the default
+  `device="auto"`.** `Tensor.type()` manufactures the legacy string
+  `'torch.mps.FloatTensor'` on MPS and `Tensor.type(…)` then refuses to parse it
+  - legacy tensor types exist only for CPU and CUDA - so `decode_outputs` died
+  with `ValueError: invalid type: 'torch.mps.FloatTensor'` on the last statement
+  of an otherwise-complete forward pass. Every `format="pytorch"` /
+  `format="safetensors"` YOLOX snippet a Mac user copied failed on paste; the
+  same weights ran on `device="cpu"`. The six legacy-type-string casts in the
+  vendored YOLOX tree now carry a dtype and an explicit device, which is the form
+  upstream's own sibling call already uses. Numerically identical on CPU and CUDA
+  (upstream weights strict-load into this tree and the forward pass is
+  `torch.equal`), and it newly permits a device the model could not run on at
+  all. Recorded in `_yolox/NOTICE` under Apache-2.0 § 4b.
+- **Two models loaded in one session collided in the weights cache.** The
+  rebuilt RF-DETR container was named `{weights.stem}.rfdetr.pth`, and every
+  Pictograph model publishes its native weights as `model.safetensors` - so
+  offline, every model in an organization resolved to one `model.rfdetr.pth`.
+  The second model loaded found it already present and rebuilt itself from the
+  FIRST model's architecture, class list and resolution. The container is now
+  keyed on the model: the source file's `(path, size, mtime_ns)` plus the
+  variant, class list and resolution that shape the payload.
+- **A degenerate prediction no longer takes down `.predict()`.** A zero-extent
+  box in a model's low-confidence tail raised
+  `ValidationError: bounding_box.h Input should be greater than 0` and the caller
+  got nothing - not the ~85 well-formed predictions beside it. `build_result` now
+  drops predictions with no spatial extent (a zero or negative box or oriented
+  box, a polygon ring under three points). Deliberately narrow: a prediction
+  malformed in any other way still raises, because that is a producer bug rather
+  than a weak detection.
+
+## [1.69.14]
+
+### Changed
+- **`pictograph.pipelines` is dissolved. Every orchestrator moved onto the
+  resource that owns its noun.** A module of wrappers around other calls is not a
+  primitive: `upload_dataset_from_folder(client, …)` did nothing but call
+  `client.datasets` and `client.images`, so it now IS an images method. The
+  mapping, in full (shown with each method's CURRENT name):
+
+  | Was | Is |
+  |---|---|
+  | `pipelines.upload_dataset_from_folder(client, ds, folder)` | `client.images.upload_from_directory(ds, folder)` |
+  | `pipelines.augment_dataset(client, src, ops=[...])` | `client.images.augment(src, [...])` |
+  | `pipelines.tile_dataset(client, src, rows=2)` | `client.images.tile(src, rows=2)` |
+  | `pipelines.auto_annotate_dataset(client, ds, classes=[...])` | `client.auto_annotate.dataset(ds, [...])` |
+  | `pipelines.import_coco_annotations(client, ds, coco)` | `client.annotations.import_coco(ds, coco)` |
+  | `pipelines.import_pascal_voc_annotations(client, ds, xml)` | `client.annotations.import_pascal_voc(ds, xml)` |
+  | `pipelines.import_yolo_annotations(client, ds, labels, names)` | `client.annotations.import_yolo(ds, labels, names)` |
+
+  Behaviour is identical - this is a relocation, not a redesign. The `client`
+  first argument is gone (it is `self`), and `ops` / `classes` are now positional
+  on `images.augment` and `auto_annotate.dataset`, matching how every other
+  resource method takes its subject.
+
+  `pipelines.train_pipeline` moved too, but the method it moved to
+  (`training.from_dataset`) has since been removed: a training run is started
+  from a completed export, so use
+  `client.training.create(dataset, export, pipeline_type=…, name=…)`.
+
+- **`pictograph.aio.pipelines` moved the same way**: `AsyncImages
+  .upload_from_directory` and `AsyncAnnotations.import_coco` /
+  `.import_pascal_voc` / `.import_yolo`. The poll-bound and Pillow-bound flows
+  stay sync-only, as before - concurrency would not shorten them.
+
+- **Report and failure types travelled with their methods**, and are now
+  top-level exports so they have a stable home: `UploadReport` / `UploadFailure`
+  / `AugmentReport` / `AugmentFailure` / `TileReport` / `TileFailure` (in
+  `pictograph.resources.images`), `AnnotateReport` / `AnnotationFailure` /
+  `AnnotateMode` (`…auto_annotate`), `AnnotationImportReport` /
+  `AnnotationImportFailure` (`…annotations`). `from pictograph import
+  UploadReport` now works.
+
+### Removed
+- **`pictograph.workflows` is gone.** It existed only as the deprecated 1.7.0
+  alias of `pipelines`; with `pipelines` gone it had nothing to alias.
+  **"Workflow" now means exactly one thing in this SDK: `client.workflows`, the
+  node-graph DAG resource.**
+
+### Notes
+- Agent tool NAMES are unchanged (37 tools, same set). They are a flat
+  agent-facing vocabulary, not a Python call path, and renaming them would
+  invalidate every agent prompt for no gain. Only the handlers were re-pointed.
+- The bundled skill's `references/pipelines.md` is now
+  `references/bulk-operations.md`.
+
+## [1.69.13]
+
+### Changed
+- **Three overlapping hardware arguments collapsed into ONE `device=`, present
+  and identical on BOTH loaders.** `get_model` used to take `device` +
+  `accelerate` + `providers`; `load_model` took two of the three and **not**
+  `device`, so a local `.pth` could not be pinned to a GPU at all. They are now
+  twins:
+
+  ```python
+  get_model(name_or_id, *, task, format, precision, target, api_key, client,
+            confidence, device="auto", cache_dir)
+  load_model(weights, config, *, task, format, confidence, device="auto", cache_dir)
+  ```
+
+  `device=` names the **hardware** - `"auto"` (default), `"cpu"`, `"cuda"` /
+  `"cuda:1"`, `"mps"` - and `format=` names the **weights**. The execution
+  provider is derived from the pair and is never named by the caller: `mps`
+  reaches torch's MPS backend for a `.pth` and CoreML for an `.onnx`, `cuda`
+  reaches TensorRT for an `.engine` and CUDA for an `.onnx`.
+  `DEVICES_BY_RUNTIME` in `pictograph.inference.runtime` is that mapping as one
+  readable table, and a pair that does not exist (a `.engine` on the CPU) raises
+  naming what the format CAN run on, before any download or runtime import.
+
+- **A named device is honoured or RAISES, naming what is available.** Never a
+  silent fall back to CPU, which is the difference between "cuda was ignored" and
+  "you have no CUDA". Three gates enforce it: the format/device pair must exist,
+  the runtime must actually have the hardware, and the built ONNX session must
+  have KEPT the provider it registered. `device="auto"` is the sole exception and
+  always was - it never promised particular hardware, so it degrades down the
+  measured ladder and warns.
+
+- `model.device` continues to report what **actually ran**, measured not
+  requested, and may be more specific than the request: `device="mps"` on an
+  `.onnx` reports `"coreml"`.
+
+### Added
+- **`load_model` now loads all five formats**, including the two native
+  containers. It previously refused `pytorch` and `safetensors` on the grounds
+  that rebuilding a checkpoint needs the model record - it does not, it needs the
+  task, architecture and training config, and a pipeline writes all three into
+  the `config.json` that ships beside the weights. The offline rebuild shares
+  every line with the online one, so a `.pth` cannot behave differently depending
+  on which loader it came through.
+- **`device="cuda:N"` is honoured everywhere**, not just by torch. ONNX Runtime
+  gets `device_id`; the TensorRT session deserializes the plan, creates its
+  context, allocates its stream and every buffer inside one `torch.cuda.device(N)`
+  scope rather than trusting the ambient current device. Without this a multi-GPU
+  box silently ran everything on GPU 0.
+
+### Fixed
+- A checkpoint nested under `model_state_dict` (or `state_dict`) is now unwrapped
+  like one nested under `model`. The classification pipeline writes the published
+  `checkpoint_best_*.pth` bare and its resumable checkpoint nested, and the
+  filename does not distinguish them - so handing `load_model` the wrong one
+  failed the strict load with a wall of "Missing key(s)" naming every layer in
+  the backbone, which says nothing about the container.
+
+### Removed
+- **`accelerate=` is gone**, and no behaviour went with it. `"off"` is now
+  `device="cpu"` (same CPU-only pin, same instant load), and `"max"`'s entire
+  measured effect - paying CoreML's slow session build for a slow-to-build
+  architecture, 31.7 s cold for RF-DETR - is what naming `device="mps"` does.
+  `device="auto"` still skips that build, because a 31 s pause nobody asked for
+  reads as a hang. Steady-state throughput is unchanged in every configuration.
+- **`providers=` is gone from both public loaders.** Everything it was needed for
+  is now expressible as a device, including per-GPU selection. It survives as a
+  private argument used by `benchmarks/inference_bench.py` to pin one exact
+  provider configuration per row, which is how the measured tables in
+  `runtime.py` are produced. `model.providers` is untouched: it reports what ran.
+- `Accelerate` and `ProviderSpec` are no longer exported. `Device` and `DEVICES`
+  are, from both `pictograph` and `pictograph.inference`.
+
+## [1.69.11]
+
+### Removed
+- **`full_pipeline` is gone - entirely, not deprecated.** The one call that
+  chained upload, auto-annotate and train has been deleted, along with
+  `PipelineReport`, its agent-registry tool and its bundled-skill wrapper. The
+  agent registry goes **38 -> 37 tools**.
+
+  It was the wrong shape: it fed unreviewed auto-annotations straight into a
+  training run with no config attached, so a caller could neither see nor correct
+  any stage. **The primitives stay** - upload, auto-annotate and train are called
+  explicitly, in order, with each report inspected before the next step. Do not
+  re-add a function (or an agent tool) that composes them for you.
+
+- **Active-learning uncertainty ranking is gone - entirely.** Removed
+  `rank_dataset_by_uncertainty` and its async twin, the `ActiveLearningReport` /
+  `UncertaintyFailure` types, the `pictograph.metrics` uncertainty scorer
+  (`rank_by_uncertainty`, `UncertaintyScore`, `score_image`, `image_uncertainty`,
+  `UncertaintyMethod`), and the `pictograph metrics rank` CLI subcommand. It was
+  never an agent tool, so the registry is unaffected by this half.
+
+  **`evaluate_detections` is a separate feature and stays**, as does
+  `pictograph metrics evaluate` (offline P/R/F1/mAP, useful in CI). Unrelated:
+  the active-learning *filter* on the images and datasets API
+  (`min_confidence_lt`, `model_confidence`) is an API capability and is untouched.
+
+### Changed
+- `pictograph.workflows` remains a deprecated alias of `pictograph.pipelines`; it
+  simply no longer re-exports the removed names.
+
+## [1.69.10]
+
+### Changed
+- **`pip install "pictograph[inference]"` is now the WHOLE install for every
+  weights format it covers.** `format="onnx"`, `"pytorch"` and `"safetensors"`
+  all run, for all six model families, with no second `pip` command - the extra
+  gained `torch`, `torchvision`, `safetensors` and a pinned
+  `segmentation-models-pytorch==0.5.0` alongside the ONNX stack.
+
+  It replaces a real defect, not a rough edge: the app's "Install Pictograph"
+  block printed our install line and then, beneath it,
+  `pip install torch segmentation-models-pytorch` - or, for a YOLOX model, a
+  `pip install git+…/YOLOX.git --no-deps` plus five transitive packages. Those
+  are our own undeclared dependencies, handed to the reader as homework. The rule
+  now, enforced by a test: anything a published model needs in order to load is
+  **declared by an extra or vendored into the wheel**, and the only install
+  command this SDK prints - in a docstring, an `ImportError`, the docs or the app
+  - names `pictograph`.
+
+- **`segmentation-models-pytorch` is PINNED, not floored**, to the same `0.5.0`
+  the training image pins. It DEFINES AN ARCHITECTURE: a `.pth` is a map from
+  layer NAME to tensor, strict-loaded into `smp.Segformer(…)` / `smp.Unet(…)`
+  rebuilt from that code. A floor would let pip install a release that renames or
+  re-nests one submodule, and the load then fails - or succeeds against a
+  silently different block. Bump only in lockstep with the training image.
+
+- `[executorch]` and `[tensorrt]` stay separate extras, and their hints now read
+  `pictograph[inference,executorch]` / `pictograph[inference,tensorrt]`. Neither
+  can be folded in: ExecuTorch pins one exact `torch` minor (`>=2.12,<2.13`),
+  which would impose that torch on every ONNX-only user, and `tensorrt` on PyPI
+  is a CUDA-only meta package with no macOS or CPU distribution at all - folding
+  it in would make `pip install "pictograph[inference]"` fail outright on any
+  machine without a CUDA stack.
+
+- The `[torch]` extra is unchanged and stays, for `Datasets.as_pytorch()` - a
+  training-loop user should not have to install an ONNX runtime, OpenCV and
+  scikit-image to feed a DataLoader. `[inference]` is a strict superset of it.
+
+### Added
+- **The YOLOX architecture is vendored** into `pictograph.inference._yolox`
+  (Apache-2.0, `LICENSE` + `NOTICE` shipped in the wheel), from commit
+  `6ddff4824372906469a7fae2dc3206c7aa4bbaee` - the one the training service pins,
+  i.e. the architecture our published weights encode. Same treatment RF-DETR got
+  in 1.69.8, and for a harder reason: `yolox` could not have been declared as a
+  dependency even if we wanted to. Measured, in a clean venv:
+
+  * PyPI's only release is **0.3.0 (2022-04-22), sdist only**, and its `setup.py`
+    compiles a C++ extension behind
+    `assert TORCH_AVAILABLE, "torch is required for pre-compiling ops"`. pip
+    generates a dependency's metadata *before* it installs torch, so
+    `pip install yolox` aborts with exactly that AssertionError.
+  * 0.3.0 is a **different architecture** from the pinned commit - they differ
+    inside `yolo_head.py`, including `decode_outputs`.
+  * Its `install_requires` would add `onnx-simplifier==0.4.10`, `pycocotools`,
+    `tensorboard`, `thop`, `ninja` and - worst - `opencv_python`, a SECOND
+    provider of the top-level `cv2` package beside our `opencv-python-headless`.
+  * A `git+https://…@<sha>` direct reference is rejected by PyPI at upload
+    (PEP 440), so a published wheel cannot carry one.
+
+  1,251 of the upstream package's 7,691 Python lines are vendored (16.3%) plus a
+  127-line `_upstream_utils.py` gathering the four `yolox.utils` helpers
+  `yolo_head.py` imports; `loguru` is replaced by the stdlib logger so it is not
+  a runtime dependency for two unreachable log calls. Verified against the real
+  upstream source: identical `state_dict()` keys and shapes for all six sizes,
+  upstream weights strict-load into the vendored module, and outputs are exactly
+  equal (`max|Δ| = 0.0`). See `tests/unit/test_yolox_vendored.py`.
+
+## [1.69.8]
+
+### Removed
+- **`rfdetr` is no longer needed to run RF-DETR weights - the architecture is
+  vendored.** Loading a `format="pytorch"` / `"safetensors"` RF-DETR model used
+  to require `pip install rfdetr`, which also pulls **`transformers>=5.1,<6`**
+  and **`supervision`** into the environment - a hard, narrow version range on
+  one of the most conflict-prone packages in the ecosystem, imposed on a user who
+  only wanted to run weights we had already given them. All three are gone;
+  `pictograph` alone now rebuilds and runs the model.
+
+  The dependency existed to do exactly one thing: reconstruct the `nn.Module` so
+  a state dict can load into it. That subset of RF-DETR **1.8.3** - backbone,
+  transformer, heads, weight loader, postprocessor - now lives in
+  `pictograph.inference._rfdetr`, under Apache-2.0 with attribution in its
+  `NOTICE`. Training, export, LoRA and the platform integrations are not
+  vendored; a checkpoint reload never reaches them. The `transformers` base
+  classes the DINOv2 backbone inherited from are reimplemented in `_compat.py`.
+
+  **1.8.3 is deliberate and pinned**: it is the version the training image
+  installs, so the shipped weights and the architecture that rebuilds them come
+  from the same release. A test fails if the two ever drift.
+
+  Verified against real trained RF-DETR detection, segmentation and keypoint
+  models rebuilt from their published artifacts: the vendored architecture
+  reproduces stock `rfdetr` 1.8.3 **to float noise** (identical detection counts
+  and classes, ≤0.004 px geometry, 0.000 confidence, byte-identical masks), and
+  its delta against each model's ONNX twin is unchanged from what the `rfdetr`
+  package itself produced.
+
+### Fixed
+- `pip install "pictograph[torch]"` did not actually install everything a native
+  PyTorch model needs: **`torchvision`** was a hard requirement of the
+  classification path but went undeclared. It is now part of the extra.
+
+## [1.69.7]
+
+### Changed
+- **The model-loading API is unified on ONE argument: `format=`.** `get_model`
+  and `load_model` now both take the same `format`, typed as a `Literal` so a
+  wrong value is a type error rather than a runtime surprise. It names the
+  **weights file**, and the runtime that executes it is derived from that instead
+  of being asked for separately:
+
+  | `format=` | file | runtime |
+  |---|---|---|
+  | `pytorch` | `.pth` | `pytorch` |
+  | `safetensors` | `.safetensors` | `pytorch` |
+  | `pytorch_engine` | `.pte` | `executorch` |
+  | `onnx` (default) | `.onnx` | `onnxruntime` |
+  | `tensorrt_engine` | `.engine` | `tensorrt` |
+
+  Two selectors are two sources of truth that can disagree; one cannot. A
+  `.engine` is executed by TensorRT and by nothing else, so `runtime=` was always
+  a restatement of the artifact choice. `Runtime` remains the vocabulary of what
+  RAN (`model.backend`), which is a report, not a request.
+
+  `load_model` keeps dispatching on the weights SUFFIX; `format=` is now the
+  explicit override for a renamed file, replacing `runtime=` in that role.
+
+- **`get_model(format=…)` distinguishes the two native containers**, which
+  `load_pytorch` conflated behind a preference. `format="safetensors"` fetches
+  the parity-gated artifact (published only after a publish-blocking comparison
+  against that version's ONNX - the one to reach for, and the only native form
+  the keypoint family publishes); `format="pytorch"` fetches the raw training
+  checkpoint. **Neither is ever substituted for the other**: a model that does not
+  publish the requested container is refused with a `ConflictError` naming the
+  formats it DOES publish, read off its own files manifest.
+
+- `client.models.load(…)` gained the same `format=` (plus `precision`, `target`
+  and `device`), so the client-bound loader is a true twin of `get_model` rather
+  than an ONNX-only subset. Both now run through one shared implementation.
+
+- `pictograph models download --format` accepts all five of the download route's
+  formats (`onnx`, `pytorch`, `safetensors`, `pte`, `engine`). It previously
+  refused `safetensors`/`pte`/`engine` client-side on models that publish them.
+
+### Removed
+- **`load_pytorch` - top-level and `client.models.load_pytorch`.** Replaced by
+  `get_model(name, format="pytorch")` / `format="safetensors"` and the
+  client-bound `client.models.load(name, format=…)`. A breaking change, shipped
+  in place: the SDK is early and has no external consumers.
+- **`runtime=` on `get_model` and `load_model`.** Superseded by `format=`; pass
+  the format and the runtime follows.
+
+### Notes
+- `Models.download(format=…)` is unchanged and still speaks the DOWNLOAD ROUTE's
+  vocabulary (`pte` / `engine`), because it is a raw byte fetch that mirrors
+  `GET /models/{id}/download?format=` one-for-one. The correspondence between the
+  two vocabularies is documented on the method and translated in exactly one
+  place (`inference.runtime.wire_format`).
+- The wheel's own docs (README + the bundled `pictograph-cv` skill) are now
+  hard-gated against the loader signature and the `format=` vocabulary.
+
+## [1.69.6]
+
+### Changed
+- **Internal infrastructure names removed from user-facing documentation.**
+  Docstrings, Pydantic `Field(description=…)` (which becomes the JSON Schema
+  agent tool-callers read), tool descriptions, CLI `--help` text and two
+  exception messages named vendors and platforms a caller cannot act on. They now
+  describe the observable behaviour instead ("a signed storage URL", "object
+  storage", "the training service").
+
+  Behaviour a caller must reason about was **kept and, in places, sharpened**:
+  - `Exports.download` / `Models.download` / `Datasets.download` still state that
+    the transfer is a **second request to a different host** carrying **no SDK
+    credentials** (the authorization is the signature in the URL) - the fact that
+    matters when a download fails while API calls succeed.
+  - `Images.upload` still states that bytes go **straight to object storage,
+    never relayed through the Pictograph API**, which is why the 10 MB
+    request-body limit does not apply.
+  - `Datasets.freeze` / `restore` still document the cold-storage trade-off
+    (discounted quota, paused byte-heavy operations, 90-day minimum-duration
+    charge on early restore) without naming the storage tier's product name.
+  - Wire field names the API actually sends are unchanged - renaming them would
+    break the contract and make the docs wrong.
+
+  A build-failing guard keeps this true: it scans every docstring, `description=`
+  and `help=` string in the package on each run.
+
+### Fixed
+- The `cancel_training` agent tool description claimed it "refunds remaining GPU
+  minutes". Training is **charge-on-success**: a run cancelled before completion
+  is never charged, so there is nothing to refund. The description now matches
+  `Training.cancel`.
+
+## [1.69.5]
+
+### Changed
+- **Bundled `pictograph-cv` Claude Skill rewritten against the shipped SDK.** The
+  skill had drifted well behind the package it documents. Corrected, not merely
+  reworded:
+  - **Local inference was entirely missing.** `get_model` / `load_model` /
+    `load_pytorch`, the five task-typed model and result classes, the four
+    runtimes and their artifacts, and the suffix dispatch on `.onnx` / `.pte` /
+    `.engine` now have their own reference - including that a TensorRT plan is
+    bound to one GPU architecture and is not portable.
+  - **`DeploymentClient.infer()` returns the five typed result classes**, not a
+    dict. Nothing now suggests `result["predictions"]`.
+  - **Compute credit is USD-denominated.** The old integer-"credits" cost table
+    was fabricated; estimation now reads `total_micro_usd` / `remaining_micro_usd`,
+    and `PaymentRequiredError` is documented with its real attributes
+    (`credit_cost` / `credits_remaining` / `unit` / `upgrade_url`) rather than the
+    non-existent `required` / `remaining`.
+  - **Removed the "training needs at least 5 images" rule**, which does not exist.
+  - Added the previously undocumented bulk helpers (tiling, augmentation,
+    COCO/YOLO/Pascal-VOC annotation import), model-assisted batch labelling
+    (`model_id=`), SAHI, `quote()`, model versions and precision, and the `obb`
+    (`oriented_box`) geometry.
+  - The five wrapper scripts now report a failure as JSON on stderr instead of a
+    traceback, cover all twelve export formats, price the images they would
+    actually annotate, and use the real terminal-status values.
+
+### Added
+- Skill tests resolve the documentation against the installed SDK: every wrapper
+  is executed, every documented SDK call is bound against its real signature, and
+  every `pictograph <group> <command>` is checked against the CLI registry.
+
+## [1.69.1]
+
+### Fixed
+- **`load_pytorch` now prefers the GATED native artifact (safetensors) over the
+  `.pth` checkpoint.** Safetensors is published only after a publish-blocking
+  parity gate has compared it against that version's ONNX graph; the `.pth` has
+  never been gated. Until this release `rfdetr_detection` glob-picked its `.pth`
+  out of the training output directory (the best/EMA epoch) while exporting its
+  ONNX from the live post-train model, so the two published artifacts of one
+  model version encoded **different models** - and `load_pytorch(m)` returned
+  materially different predictions than `get_model(m)`, breaking the documented
+  interchangeability promise.
+
+  Measured on real published pairs (three real dataset images each, detection
+  rule, non-vacuous survivor counts):
+
+  | model | `.pth` vs its own ONNX | safetensors vs the same ONNX |
+  |---|---|---|
+  | RF-DETR Nano | 5.4e-03 / **0.630** (3 / 13 survivors) | 3.3e-04 / 2.4e-04 - PASS |
+  | RF-DETR Medium | **0.630 / 0.822 / 0.945** (24 / 37 / 25 survivors) | no safetensors published |
+  | RF-DETR Large | **3.682 / 2.991 / 0.633** (2 / 1 / 15 survivors) | 6.6e-04 / 8.5e-04 - PASS |
+
+  The training pipeline is fixed separately so new runs publish a `.pth` written
+  from the export target itself, but every model trained before that fix still has
+  the wrong `.pth` in storage - this preference repairs all of them with no change
+  to a single stored artifact. A version that publishes no safetensors (its gate
+  failed) still falls back to the `.pth`, and a `.pth` already in the local cache
+  is still honoured, so upgrading forces no re-download.
+
+## [1.69.0]
+
+### Added
+- **Two new inference runtimes - ExecuTorch (`.pte`) and TensorRT (`.engine`)**,
+  bringing local inference to **four**: `pytorch | executorch | onnxruntime |
+  tensorrt`. All four return the SAME five task model classes and the SAME five
+  result classes; there is no `ExecuTorchDetectionModel`.
+- **`load_model` dispatches on the weights suffix** (`.onnx` / `.pte` /
+  `.engine` / `.plan`), so the offline call stays
+  `load_model(weights, config, task=…)` for every runtime and the artifact
+  remains self-describing.
+- **`get_model(runtime=…, precision=…, target=…)`** selects which artifact to
+  fetch. `runtime="tensorrt"` defaults `target` to **this machine's** GPU
+  architecture, since any other engine is a file that provably cannot load here.
+- **`pictograph.Runtime`** and **`pictograph.RUNTIMES`** - the runtime type and
+  the ordered vocabulary, both exported top-level for callers that render or
+  validate it.
+- New optional extras `[executorch]` and `[tensorrt]`. The `executorch` extra
+  declares `torch>=2.9` because ExecuTorch's prebuilt runtime is compiled against
+  a specific torch ABI, and a mismatch otherwise surfaces as a missing C++ symbol
+  at `dlopen` time rather than as a resolver conflict.
+- The files manifest (`ModelFileEntry`) gained five additive artifact fields -
+  `runtime`, `precision`, `target_key`, `toolchain_version`, `stale`,
+  `artifact_id`. Older API versions that omit them still parse.
+
+### Changed
+- **`InferenceResult.backend` now names the RUNTIME**: `"onnx"` ->
+  `"onnxruntime"` and `"torch"` -> `"pytorch"`, joined by `"executorch"` and
+  `"tensorrt"`. The value is the one vocabulary the API, the SDK and the model
+  card all match on; three spellings of one concept is how three surfaces stop
+  agreeing.
+- `.providers` is documented per runtime - ORT providers, a `.pte`'s delegate
+  backends, a plan's TensorRT version and GPU target, empty on `pytorch`.
+- ExecuTorch and TensorRT read their input shape off the loaded ARTIFACT rather
+  than the config, which is strictly more authoritative for an AOT-compiled
+  program.
+- README's local-inference section rewritten; it still documented the
+  `LocalModel` / `PyTorchModel` classes that 1.68 replaced with the task-typed
+  ones.
+
+### Notes
+- **A mismatched `.engine` is refused BEFORE deserialization**, with a message
+  naming the built-for target and the detected device, matching the API's own
+  wording verbatim.
+- **TensorRT remains OUT of the automatic `accelerate` ladder** (the measured
+  do-not-undo in `inference/runtime.py`). An ahead-of-time `.engine` removes the
+  first-inference build cost that made ORT's `TensorrtExecutionProvider` a bad
+  default; it does not make that provider a good automatic choice.
+- Parity is by CONSTRUCTION: the three graph runtimes share one preprocessing /
+  decode / postprocess implementation and substitute only the forward pass.
+  Measured ONNX Runtime and ExecuTorch agreement across all five task families at
+  native and non-native input sizes: max |Δconfidence| 3.6e-07, max |Δcoordinate|
+  8.1e-05 px, identical class sets.
+
+## [1.67.14]
+
+### Added
+- **`load_model(weights, config)`** - load a trained model from its local files
+  (ONNX weights + the `config.json` a training pipeline writes) fully offline, no
+  API call. The offline twin of `get_model()`; returns the same `LocalModel`.
+- **`InferenceModel`** protocol - the common, swappable interface of `LocalModel`
+  (ONNX) and `PyTorchModel` (native), so inference code can target either backend.
+- Top-level exports: `PyTorchModel`, `load_model`, `InferenceModel`.
+- README "Run your trained models" section covering every path (hosted, local
+  ONNX, offline config.json, native PyTorch) and their equivalence.
+
+### Changed
+- **`LocalModel` is now thread-safe** - `predict()` / `predict_batch()` serialize
+  internally (the ONNX wrappers keep per-call state such as the resize ratio),
+  fixing a race when sharing one model across threads.
+- **`LocalModel.predict_batch()` now batches** YOLOX detection into a single ONNX
+  run (a real throughput win) instead of looping `predict()`.
+- `LocalModel`, `PyTorchModel` and `DeploymentClient` gained `close()` plus
+  context-manager support to release native sessions and connections promptly.
+- `DeploymentClient` reuses one pooled, keep-alive HTTP client instead of opening
+  a fresh connection per `infer()` call.
+
+## [1.67.13]
+
+### Changed
+- Clarified `get_model()`'s authentication docstring: the API key comes from the
+  `api_key=` argument or the `PICTOGRAPH_API_KEY` environment variable. The
+  `pictograph login` config file is read by the CLI only, not by `Client`.
+- Inference input-shape introspection now logs through the `pictograph.inference`
+  logger instead of printing to stdout.
+
+### Added
+- `NearDuplicatesResult` is now exported at the top level
+  (`from pictograph import NearDuplicatesResult`) so `datasets.near_duplicates()`
+  return values can be annotated directly.
+- `CHANGELOG.md`, `CONTRIBUTING.md` and `SECURITY.md`.
+
+## [1.67.12]
+
+- Baseline for this changelog. For releases prior to this version, see the
+  commit history and the [PyPI release history](https://pypi.org/project/pictograph/#history).
