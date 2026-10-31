@@ -1,0 +1,16 @@
+{
+  "description": "Sets the API key entered for the plugin as PICTOGRAPH_API_KEY for the session's commands",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh",
+            "args": []
+          }
+        ]
+      }
+    ]
+  }
+}

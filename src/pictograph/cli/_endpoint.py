@@ -1,0 +1,307 @@
+"""ONE live endpoint at the terminal: what ``pictograph deployments`` and ``pictograph workflows`` share (B579).
+
+Where an endpoint is served and its autoscaling (the options every endpoint command takes, said once), its token's
+one showing, and its streams: :func:`run_stream` opens a stream on an endpoint's direct client (a deployment's, or a
+workflow's - the same client), says where to watch it (and where to send its video), prints each frame - and with
+``--all`` every message - as one JSON line, and says why it ended. Ctrl-C stops it. :func:`watch_stream` does the same
+for a stream joined rather than opened - a workflow file run's live view (B607 slice C) - whose Ctrl-C only stops
+watching it.
+"""
+
+from __future__ import annotations
+
+import time
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Annotated, Any
+
+import typer
+
+from pictograph.cli._format import err_console, print_json_line
+
+if TYPE_CHECKING:
+    from pictograph.models.deployment import DeploymentRuntime
+    from pictograph.models.engine_build import EngineBuild
+
+# ── where it is served and its autoscaling: the options every endpoint command takes ──
+
+REGION_HELP = (
+    "Where it is served: us-east or us-west (`pictograph deployments compute-options` lists them), or auto "
+    "(default) - the region nearest where this runs. Pick the one nearest your callers; it never changes once "
+    "deployed."
+)
+MIN_HELP = "Containers kept warm (0 = scale to zero, billed only while one is up)."
+MAX_HELP = "Autoscale ceiling."
+SCALEDOWN_HELP = "Idle seconds before scale-down."
+
+# Bounds beyond these are the server's to refuse (its SCALING_LIMITS), so they are said in one place.
+Region = Annotated[str, typer.Option("--region", help=REGION_HELP)]
+MinContainers = Annotated[int, typer.Option("--min-containers", "--min", min=0, help=MIN_HELP)]
+MaxContainers = Annotated[int, typer.Option("--max-containers", "--max", min=1, help=MAX_HELP)]
+ScaledownWindow = Annotated[
+    int, typer.Option("--scaledown-window", "--scaledown", help=SCALEDOWN_HELP)
+]
+# The same, for a change: only what is given changes.
+MinChange = Annotated[int | None, typer.Option("--min-containers", "--min", min=0, help=MIN_HELP)]
+MaxChange = Annotated[int | None, typer.Option("--max-containers", "--max", min=1, help=MAX_HELP)]
+ScaledownChange = Annotated[
+    int | None, typer.Option("--scaledown-window", "--scaledown", help=SCALEDOWN_HELP)
+]
+
+
+def say_token_once(where: str) -> None:
+    """The warning beside an endpoint token's one showing: ``where`` names what a member reveals it from in the app
+    ("the deployment's Analytics", "the workflow's Analytics")."""
+    err_console.print(
+        "[bold yellow]Save this token now - the API won't show it again "
+        f"(a member can reveal it from {where} in the app).[/bold yellow]"
+    )
+
+
+# ── what it is doing: its state and its engines' build, in a person's words ──
+
+
+def is_building(build: EngineBuild | None) -> bool:
+    """Whether an endpoint waits on a TensorRT engine being built."""
+    return build is not None and build.state == "building"
+
+
+def build_estimate_s(build: EngineBuild | None) -> float | None:
+    """How long builds like the one an endpoint waits on took before (None: no history)."""
+    estimates = [m.estimate_s for m in (build.models if build else []) if m.estimate_s is not None]
+    return max(estimates) if estimates else None
+
+
+def build_state(build: EngineBuild | None) -> str:
+    """An endpoint's engine build, in a few words ("" when there is none)."""
+    if build is None:
+        return ""
+    if is_building(build):
+        estimate = build_estimate_s(build)
+        return f"building (about {estimate:.0f}s)" if estimate is not None else "building"
+    times = [m.build_s for m in build.models if m.build_s is not None]
+    return f"built in {sum(times):.0f}s" if times else build.state
+
+
+def waited(runtime: DeploymentRuntime) -> str:
+    """How long a request has waited for a container ("" when the wait has no start), on the server's clock when it
+    says the time it read it."""
+    if runtime.waiting_since is None:
+        return ""
+    now = runtime.checked_at or datetime.now(timezone.utc)
+    seconds = max(0, int((now - runtime.waiting_since).total_seconds()))
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{seconds % 3600 // 60:02d}m"
+
+
+def live_status(status: str, runtime: DeploymentRuntime | None) -> str:
+    """The status a person reads: an ``active`` endpoint with what it is doing right now - ``active · live (2)``,
+    ``active · live (1, elsewhere in the US)`` (its region had no GPU free), ``active · asleep``,
+    ``active · waiting for a GPU 1m42s``."""
+    if status != "active" or runtime is None:
+        return status
+    if runtime.state == "live":
+        starting = f", {runtime.creating} starting" if runtime.creating else ""
+        away = runtime.fallback
+        elsewhere = (
+            ""
+            if away <= 0
+            else ", elsewhere in the US"
+            if away >= runtime.containers
+            else f", {away} elsewhere in the US"
+        )
+        live = f"live ({runtime.containers}{starting}{elsewhere})"
+    elif runtime.state == "starting":
+        live = f"starting ({max(runtime.creating, 1)})"
+    elif runtime.state == "waiting":
+        live = " ".join(filter(None, ("waiting for a GPU", waited(runtime))))
+    else:  # asleep, unknown, or a state added later: its own word
+        live = runtime.state
+    return f"{status} · {live}"
+
+
+def say_waiting(name: str, build: EngineBuild | None, *, building: str, until: str) -> None:
+    """What a ``--wait`` says it waits on: ``building`` (the engines, in words) while they are built, else the endpoint
+    reaching ``until``."""
+    if is_building(build):
+        estimate = build_estimate_s(build)
+        about = f" (about {estimate:.0f}s)" if estimate is not None else ""
+        err_console.print(f"Building {building} first{about}, then starting {name}...")
+    else:
+        err_console.print(f"Waiting for {name} to {until}...")
+
+
+# ── its streams ──
+
+#: Why a stream ended, as the CLI says it (``DeploymentStream.ended``).
+STREAM_ENDED = {
+    "source_ended": "its camera stopped sending",
+    "idle": "nothing read it or sent to it for 30 seconds",
+    "time_limit": "it reached its four hours",
+    "container_stopped": "its container stopped",
+    "ended": "it had already ended",
+    # A run's live view (joined): its run's end.
+    "run_completed": "its run completed",
+    "run_failed": "its run failed",
+    "run_cancelled": "its run was cancelled",
+}
+
+
+def outputs_line(outputs: dict[str, Any]) -> str:
+    """What a run writes, in a line: "Annotated video, Event capture -> Street scenes /captures"."""
+    names = {
+        "annotated_video": "Annotated video",
+        "annotations": "Annotations",
+        "passive_capture": "Passive capture",
+        "event_capture": "Event capture",
+        "webhook": "Webhook",
+    }
+    parts = []
+    for key, name in names.items():
+        value = outputs.get(key)
+        if key == "annotated_video":
+            if value is True:
+                parts.append(name)
+        elif isinstance(value, dict):
+            where = value.get("dataset_name") or value.get("dataset")
+            parts.append(
+                f"{name} -> {where} {value.get('folder') or value.get('directory') or '/'}"
+                if where
+                else name
+            )
+    return ", ".join(parts) or "nothing but its log"
+
+
+def run_stream(
+    conn: Any,
+    source: str,
+    *,
+    overlay: bool,
+    stream: bool = True,
+    frames: int | None,
+    seconds: float | None,
+    all_messages: bool,
+    idle_timeout: float | None = None,
+    transport: str | None = None,
+    buffer_mode: str | None = None,
+    reconnect: str | None = None,
+    outputs: dict[str, Any] | None = None,
+) -> int:
+    """Stream ``source`` through ``conn`` (a :class:`~pictograph.DeploymentClient`) until its end, Ctrl-C, ``frames``
+    frames or ``seconds`` seconds: the frames printed. ``idle_timeout``: fail (``StreamStalledError``, the stream stopped
+    with it) after that many seconds without a frame. ``outputs``: a workflow endpoint's stream's (what it writes beside
+    its log)."""
+    with (
+        conn,
+        conn.open_stream(
+            source,
+            overlay=overlay,
+            stream=stream,
+            transport=transport,
+            buffer_mode=buffer_mode,
+            reconnect=reconnect,
+            outputs=outputs,
+        ) as live,
+    ):
+        # soft_wrap: a URL printed at the terminal's width must stay one line to copy.
+        err_console.print(
+            f"Streaming ({live.id}). Watch it at {live.whep_url} (WHEP, with the token).",
+            soft_wrap=True,
+        )
+        if live.whip_url:
+            err_console.print(
+                f"Send its video to {live.whip_url} (WHIP, H.264, with the token).",
+                soft_wrap=True,
+            )
+        if live.outputs is not None:
+            err_console.print(
+                f"It writes: {outputs_line(live.outputs.model_dump(exclude_none=True))}.",
+                soft_wrap=True,
+            )
+        err_console.print("Ctrl-C stops it.")
+        printed = _print_messages(
+            live,
+            frames=frames,
+            seconds=seconds,
+            all_messages=all_messages,
+            idle_timeout=idle_timeout,
+        )
+        ended = live.ended
+    said = STREAM_ENDED.get(ended or "")
+    tail = f": {said}" if said else ""
+    err_console.print(
+        f"The stream ended after {printed:,} frame{'' if printed == 1 else 's'}{tail}.",
+        soft_wrap=True,
+    )
+    return printed
+
+
+def watch_stream(
+    live: Any,
+    *,
+    stream: bool | None,
+    overlay: bool | None,
+    frames: int | None,
+    seconds: float | None,
+    all_messages: bool,
+    idle_timeout: float | None = None,
+) -> int:
+    """Watch ``live`` - a stream joined rather than opened (a workflow file run's live view) - until its run ends,
+    Ctrl-C, ``frames`` frames or ``seconds`` seconds, its switches first set as asked (``stream`` / ``overlay``; None:
+    as they are): the frames printed. Leaving only stops watching: the run goes on."""
+    with live:
+        if stream is not None and stream != live.stream:
+            live.set_stream(stream)
+        if overlay is not None and overlay != live.overlay:
+            live.set_overlay(overlay)
+        pictures = (
+            f"Its pictures: {live.whep_url} (WHEP, with the token)."
+            if live.stream
+            else "Its stream is off: --stream turns its pictures on."
+        )
+        err_console.print(f"Watching the run's live view ({live.id}). {pictures}", soft_wrap=True)
+        err_console.print("Ctrl-C stops watching (the run goes on).")
+        printed = _print_messages(
+            live,
+            frames=frames,
+            seconds=seconds,
+            all_messages=all_messages,
+            idle_timeout=idle_timeout,
+        )
+        ended = live.ended
+    said = STREAM_ENDED.get(ended or "")
+    tail = f": {said}" if said else ""
+    err_console.print(
+        f"Watched {printed:,} frame{'' if printed == 1 else 's'}{tail}.",
+        soft_wrap=True,
+    )
+    return printed
+
+
+def _print_messages(
+    live: Any,
+    *,
+    frames: int | None,
+    seconds: float | None,
+    all_messages: bool,
+    idle_timeout: float | None,
+) -> int:
+    """Each frame of ``live`` - and with ``all_messages`` every message - as one JSON line, until it ends, Ctrl-C,
+    ``frames`` frames or ``seconds`` seconds: the frames printed."""
+    started = time.monotonic()
+    printed = 0
+    try:
+        for message in live.messages(idle_timeout=idle_timeout):
+            is_frame = message.get("type") == "frame"
+            if is_frame or all_messages:
+                print_json_line(message)
+            printed += int(is_frame)
+            if (frames is not None and printed >= frames) or (
+                seconds is not None and time.monotonic() - started >= seconds
+            ):
+                break
+    except KeyboardInterrupt:
+        pass
+    return printed
