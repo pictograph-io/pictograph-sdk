@@ -1,0 +1,119 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Least privilege. Nothing here needs to write to the repository, and a
+# pull_request run from a fork must not be able to. Never use
+# pull_request_target in this repo: it would run fork-authored code with a
+# writable token.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ruff)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[dev,cli,agents]'
+      # examples/ is included deliberately: it is the first code a reader runs,
+      # and while it sat outside the gate it accumulated four type errors and a
+      # crash on the line that prints a one-time-only deployment token.
+      - run: ruff check src/pictograph/ tests/ examples/
+      - run: ruff format --check src/pictograph/ tests/ examples/
+
+  typecheck:
+    name: Type check (mypy strict)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install -e '.[dev,cli,agents]'
+      - run: mypy src/pictograph/
+      - run: mypy examples/
+
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ['3.10', '3.11', '3.12', '3.13']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: pip install -e '.[dev,cli,agents]'
+      # No API key is present, so the live and e2e suites deselect themselves.
+      - name: Unit + integration tests with coverage
+        run: |
+          pytest \
+            --cov=src/pictograph \
+            --cov-report=xml \
+            --cov-report=term-missing \
+            --cov-fail-under=90 \
+            -m "not e2e"
+      - name: Upload coverage
+        if: matrix.python-version == '3.11'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.python-version }}
+          path: coverage.xml
+          retention-days: 7
+
+  build-wheel:
+    name: Build wheel + sdist
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [lint, typecheck, test]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: pip install build
+      - run: python -m build
+      # The bundled Claude skill has been dropped from a wheel TWICE by an
+      # over-broad packaging exclude. The unit tests cannot catch it: they call
+      # skill_path(), which resolves to the SOURCE TREE, so they stayed green
+      # while the published 1.69.64 wheel shipped zero wrapper scripts. This step
+      # runs against an INSTALLED wheel, which is the only place the bug is
+      # visible. Assert the scripts, not just SKILL.md.
+      - name: Verify wheel contents
+        run: |
+          python -m pip install dist/*.whl
+          python -c "from pictograph import Client, REGISTRY, __version__; print(f'OK v{__version__}, {len(REGISTRY)} agent tools')"
+          python - <<'PY'
+          from pictograph.skills import skill_path
+          root = skill_path("pictograph-cv")
+          assert (root / "SKILL.md").is_file(), "SKILL.md missing from wheel"
+          expected = {"export.py", "import_connector.py", "train.py", "upload_and_annotate.py"}
+          actual = {p.name for p in (root / "scripts").glob("*.py")}
+          missing = expected - actual
+          assert not missing, f"wrapper scripts missing from wheel: {sorted(missing)}"
+          refs = {p.name for p in (root / "references").glob("*.md")}
+          assert len(refs) >= 5, f"only {len(refs)} skill references in the wheel"
+          print(f"Skill bundled OK: {len(actual)} scripts, {len(refs)} references")
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
