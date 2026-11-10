@@ -1,0 +1,107 @@
+Pictograph SDK - vendored YOLOX architecture
+============================================
+
+This directory contains source code derived from YOLOX, redistributed under the
+Apache License, Version 2.0. The full licence text is in ./LICENSE.
+
+Origin
+------
+    Project:  YOLOX
+    Commit:   6ddff4824372906469a7fae2dc3206c7aa4bbaee
+    Upstream: https://github.com/Megvii-BaseDetection/YOLOX
+    Copyright (c) Megvii Inc. All rights reserved.
+    Licensed under the Apache License, Version 2.0.
+
+That commit is the one pinned by the Pictograph training pipeline, i.e. the
+architecture the weights we publish were trained as. A verbatim source tarball of
+it is retained in Pictograph's internal dependency mirror, so this tree can be
+re-diffed against its source even if the upstream repository disappears.
+
+WHAT IS HERE
+------------
+The model-construction subset only - `yolox/models/`, minus two files:
+
+    network_blocks.py   BaseConv / DWConv / CSPLayer / Focus / SPPBottleneck / …
+    darknet.py          CSPDarknet backbone
+    yolo_pafpn.py       YOLOPAFPN neck
+    yolo_head.py        YOLOXHead (incl. decode_outputs)
+    yolox.py            the YOLOX module itself
+    losses.py           IOUloss - constructed in YOLOXHead.__init__, so it is
+                        required to build the module even though the loss is
+                        never evaluated at inference
+    _upstream_utils.py  the four `yolox.utils` helpers yolo_head.py imports
+
+    NOT vendored: build.py (torch.hub model-zoo downloads) and yolo_fpn.py (the
+    Darknet-53 FPN neck - no Pictograph pipeline trains it).
+
+1,251 of the upstream package's 7,691 Python lines (16.3%), plus 127 lines of
+gathered utils. Data loading, the `Exp` system, the trainer, evaluators, COCO
+metrics, the distributed/EMA/MLflow utilities and the ONNX/TensorRT export tools
+are not vendored.
+
+NOTICE OF MODIFICATION (Apache-2.0 section 4b)
+----------------------------------------------
+Every file in this directory carries a header stating whether it was modified.
+The changes are:
+
+1.  A provenance header was prepended to each file, replacing the upstream
+    three-line shebang/coding/copyright preamble (whose copyright line is
+    reproduced in the new header).
+
+2.  `yolo_head.py` - its ONE `from yolox.utils import bboxes_iou, cxcywh2xyxy,
+    meshgrid, visualize_assign` line is redirected onto `._upstream_utils`, and
+    its `from loguru import logger` is dropped in favour of the `logger` that
+    same module exports. No other line of the file changed. Importing
+    `yolox.utils` as a package would drag in the distributed-training, MLflow,
+    EMA, LR-scheduler and COCO-metric modules, none of which a rebuilt
+    checkpoint touches.
+
+3.  `_upstream_utils.py` is a gathering file, not a rewrite: `meshgrid` (from
+    `yolox/utils/compat.py`), `bboxes_iou` and `cxcywh2xyxy` (from
+    `yolox/utils/boxes.py`), and `random_color` and `visualize_assign` (from
+    `yolox/utils/demo_utils.py`) are VERBATIM apart from the one line covered by
+    item 5. The single substitution is `logger`, which upstream binds to
+    `loguru.logger`: it is bound to the standard library's
+    `logging.getLogger("pictograph.inference")` instead, so that `loguru` is not
+    a runtime dependency of `pip install pictograph` for two log calls on a
+    label-assignment path a `.eval()`-mode checkpoint never reaches.
+
+4.  `__init__.py` is original Pictograph work, not derived from YOLOX. It
+    exposes `build_yolox(depth, width, num_classes)`, which assembles the same
+    `YOLOX(YOLOPAFPN, YOLOXHead)` the training pipeline's `DynamicExp.get_model`
+    does.
+
+5.  Six casts spelled with a LEGACY TENSOR TYPE STRING are spelled with a dtype
+    instead - four in `yolo_head.py`, one in `losses.py`, one in
+    `_upstream_utils.py::bboxes_iou`:
+
+        .type(xin[0].type())      ->  .to(device=…, dtype=xin[0].dtype)
+        (tl < br).type(tl.type()) ->  (tl < br).to(tl.dtype)
+
+    `Tensor.type()` MANUFACTURES `'torch.mps.FloatTensor'` on Apple silicon, and
+    `Tensor.type(…)` then refuses to parse it - legacy type strings exist only
+    for CPU and CUDA - so `YOLOXHead.decode_outputs` raised
+    `ValueError: invalid type: 'torch.mps.FloatTensor'` on the LAST statement of
+    an otherwise-complete forward pass. Upstream's own sibling call in the same
+    method already passes a dtype (`get_losses(…, dtype=xin[0].dtype)`), which is
+    the form adopted here; `.type(<string>)` additionally moves to that backend's
+    current device, so the device is carried explicitly by `.to(device=…)` from
+    the tensor being operated on.
+
+No file in this directory has been altered in a way that changes the numerical
+behaviour of the model it builds. Item 5 is a device-neutral spelling of the same
+cast: on CPU and CUDA it is bit-identical (asserted by the upstream-parity test in
+`tests/unit/test_yolox_vendored.py`, which strict-loads upstream weights into this
+tree and requires `torch.equal` on the forward pass), and it newly PERMITS a
+device on which the model previously could not run at all.
+
+WHY VENDORED RATHER THAN DEPENDED ON
+------------------------------------
+See the module docstring in ./__init__.py. In short: PyPI's `yolox` is 0.3.0
+(2022), sdist-only, and its `setup.py` asserts torch is importable in order to
+compile a C++ extension - so pip cannot build it as a declared dependency at all
+(`AssertionError: torch is required for pre-compiling ops`, reproduced in a clean
+venv). It is also a different architecture from the pinned SHA, and its
+`install_requires` would put a second `cv2` provider into the environment. The
+only other option, a `git+https://…@<sha>` direct reference, is rejected by PyPI
+at upload time (PEP 440), so a published wheel cannot declare one.
