@@ -1,0 +1,103 @@
+Pictograph SDK - vendored RF-DETR architecture
+==============================================
+
+This directory contains source code derived from RF-DETR, redistributed under the
+Apache License, Version 2.0. The full licence text is in ./LICENSE.
+
+Origin
+------
+    Project:  RF-DETR
+    Version:  1.11.2  (PyPI: rfdetr==1.11.2)
+    Upstream: https://github.com/roboflow/rf-detr
+    Copyright (c) 2025 Roboflow. All Rights Reserved.
+    Licensed under the Apache License, Version 2.0.
+
+RF-DETR itself carries earlier notices, reproduced here because they travel with
+the files that derive from that work:
+
+    Copied from LW-DETR (https://github.com/Atten4Vis/LW-DETR)
+        Copyright (c) 2024 Baidu. All Rights Reserved.
+    Copied from Conditional DETR (https://github.com/Atten4Vis/ConditionalDETR)
+        Copyright (c) 2021 Microsoft. All Rights Reserved.
+    Copied from DETR (https://github.com/facebookresearch/detr)
+        Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+    Copied from Deformable DETR (https://github.com/fundamentalvision/Deformable-DETR)
+        Copyright (c) 2020 SenseTime. All Rights Reserved.
+    Modified from Deformable-Convolution-V2-PyTorch
+        (https://github.com/chengdazhi/Deformable-Convolution-V2-PyTorch/tree/pytorch_1.0.0)
+        - the multi-scale deformable attention under `models/ops/`.
+    Modified from ViTDet (https://github.com/facebookresearch/detectron2/tree/main/projects/ViTDet)
+        Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
+        - the multi-scale projector, `models/backbone/projector.py`.
+    Modified from HuggingFace Transformers (https://github.com/huggingface/transformers)
+        Copyright 2022-2024 The HuggingFace Team / Meta Inc. All rights reserved.
+        Licensed under the Apache License, Version 2.0.
+
+NOTICE OF MODIFICATION (Apache-2.0 section 4b)
+----------------------------------------------
+The files in this directory have been modified by Pictograph. Each modified file
+carries a header stating so. The changes are:
+
+1.  Imports rewritten from `rfdetr.*` onto `pictograph.inference._rfdetr.*`.
+
+2.  The `transformers` base classes and helpers used by the DINOv2 backbone
+    (`PreTrainedModel`, `PretrainedConfig`, `BackboneMixin`, `BackboneConfigMixin`,
+    `ACT2FN`, `torch_int`, `prune_linear_layer`, the `ModelOutput` dataclasses and
+    the documentation decorators) are replaced by equivalent implementations in
+    `_compat.py`, so that `transformers` is not required to rebuild the
+    architecture. `_compat.py` is original Pictograph work, not derived from
+    `transformers`.
+
+3.  Training-only code is removed: `build_criterion_and_postprocessors` and
+    `build_criterion_from_config` in `models/lwdetr.py`, together with their
+    `models/criterion.py` and `models/matcher.py` imports; the two
+    `torch.jit.script`-compiled loss twins in `utilities/box_ops.py`
+    (`batch_dice_loss_jit`, `batch_sigmoid_ce_loss_jit`), whose only caller was
+    `models/matcher.py`; and `strip_checkpoint` in `utilities/state_dict.py`
+    (it rewrites a trainer's best checkpoint in place), together with its
+    `utilities/files.py` import, which would otherwise make `requests` and `tqdm`
+    dependencies of the SDK.
+
+4.  `assets/model_weights.py` is replaced by a local stub that asserts the
+    checkpoint exists rather than downloading it from a remote asset registry.
+    That file is original Pictograph work.
+
+5.  `pyDeprecate` is not used. In the previous vendoring (1.8.3) its decorators were
+    removed by hand; by 1.11.2 upstream had itself deleted the deprecated
+    `build_namespace` shim in `_namespace.py` and the `@deprecated` wrapper on
+    `load_pretrain_weights`, so no file here imports it.
+
+6.  `transformers.AutoBackbone` in `models/backbone/dinov2.py` is imported lazily
+    inside the non-windowed branch, which a checkpoint reload never takes.
+
+7.  `builder.py` is original Pictograph work. It transcribes the checkpoint
+    resolution rules of `rfdetr.detr.RFDETR.from_checkpoint`, the model assembly of
+    `rfdetr.inference._build_model_context`, and the inference pipeline of
+    `rfdetr.detr.RFDETR.predict`, and returns a plain record in place of a
+    `supervision.Detections`.
+
+8.  Checkpoint reads in `models/weights.py` go through the SDK's own loader,
+    `pictograph.inference._safe_load.safe_torch_load`, in place of upstream's
+    `rfdetr.utilities.io._safe_torch_load`: one loading policy for every checkpoint
+    the SDK reads, with upstream's `trust` mapped onto its `allow_unsafe_pickle`.
+
+9.  The LoRA error messages in `models/weights.py` name the package they need
+    (`pip install peft`) instead of telling the user to install an `rfdetr` extra,
+    and `apply_lora` takes `PreTrainedModel` (only the static target of a `cast`)
+    from `_compat.py` instead of `transformers`. LoRA is a training adapter that a
+    reload of our checkpoints never applies.
+
+10. The package `__init__.py` files that upstream uses as re-export hubs
+    (`models/`, `utilities/`, `assets/`) are empty here: importing them upstream
+    pulls in the training stack and the platform integrations.
+
+11. Em dashes in comments, docstrings and log messages are replaced with plain
+    hyphens (the repository's typography rule). No executable logic is affected:
+    the only non-docstring strings carrying one are four log messages in
+    `models/weights.py`.
+
+No file in this directory has been altered in a way that changes the numerical
+behaviour of the model it builds. That is measured, not assumed: for every variant
+(detection Nano to Large, segmentation Nano to 2XLarge, Keypoint Preview), the same
+state dict rebuilt through this tree gives eval and export forwards bit-identical
+(max |delta| 0.0) to upstream rfdetr 1.11.2 and to 1.8.3, the release vendored before.
