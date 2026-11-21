@@ -1,0 +1,167 @@
+"""``pictograph agents {install-skill,export-tools}``."""
+
+from __future__ import annotations
+
+import json
+import shutil
+from pathlib import Path
+from typing import Annotated, Literal
+
+import typer
+
+from pictograph._path_safety import safe_path_component
+from pictograph.agents import Toolkit
+from pictograph.cli._errors import command_group
+from pictograph.cli._format import print_json, print_table
+from pictograph.skills import skill_path
+
+app = command_group(no_args_is_help=True)
+
+InstallTarget = Literal["claude-code", "claude-ai", "both"]
+
+
+@app.command(
+    "install-skill",
+    help="Copy the bundled pictograph-cv Skill into ~/.claude/skills/ (Claude Code) "
+    "and/or zip it for upload to claude.ai. In Claude Code, the plugin does this in one "
+    "step and takes your API key: /plugin install pictograph --marketplace "
+    "pictograph-io/pictograph-sdk",
+)
+def install_skill(
+    target: Annotated[
+        str,
+        typer.Option(
+            "--target",
+            help="claude-code / claude-ai / both",
+        ),
+    ] = "claude-code",
+    output_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            help="Override the destination directory (default: ~/.claude/skills/).",
+        ),
+    ] = None,
+    skill_name: Annotated[
+        str,
+        typer.Option("--skill", help="Skill name (default: pictograph-cv)."),
+    ] = "pictograph-cv",
+) -> None:
+    if target not in ("claude-code", "claude-ai", "both"):
+        raise typer.BadParameter(
+            f"Invalid target: {target!r}. Use claude-code, claude-ai or both.",
+            param_hint="--target",
+        )
+    # A skill name is a slug, and it is about to be joined to ~/.claude/skills
+    # and handed to shutil.rmtree. Unvalidated, `--skill ..` resolves dest to
+    # ~/.claude and deletes the user's entire Claude configuration; `--skill
+    # ../../x` reaches further still. Reject anything that is not one component.
+    if skill_name != safe_path_component(skill_name):
+        raise typer.BadParameter(
+            f"Invalid skill name: {skill_name!r}. Expected a plain name such as "
+            "'pictograph-cv' - no path separators or '..'.",
+            param_hint="--skill",
+        )
+    src = skill_path(skill_name)
+
+    results: dict[str, str] = {}
+
+    if target in ("claude-code", "both"):
+        dest_root = output_dir or (Path.home() / ".claude" / "skills")
+        dest = dest_root / skill_name
+        dest_root.mkdir(parents=True, exist_ok=True)
+        if dest.exists():
+            shutil.rmtree(dest)
+        shutil.copytree(src, dest)
+        results["claude_code_path"] = str(dest)
+
+    if target in ("claude-ai", "both"):
+        zip_dest = (output_dir or Path.cwd()) / f"{skill_name}.zip"
+        # shutil.make_archive expects basename without extension.
+        archive = shutil.make_archive(
+            base_name=str(zip_dest.with_suffix("")),
+            format="zip",
+            root_dir=str(src.parent),
+            base_dir=skill_name,
+        )
+        results["claude_ai_zip"] = archive
+
+    print_json({"installed": True, "skill": skill_name, **results})
+
+
+@app.command(
+    "export-tools",
+    help="Emit the agent tool registry as JSON Schema (drop-in for tools.json).",
+)
+def export_tools(
+    output: Annotated[
+        Path | None,
+        typer.Option(
+            "--output",
+            "-o",
+            help="Write to file instead of stdout.",
+        ),
+    ] = None,
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="With --output, print {output, tools} as JSON instead of a sentence "
+            "(without --output the schema is JSON already).",
+        ),
+    ] = False,
+) -> None:
+    """Build a Toolkit on the fly - no API key required for schema export."""
+    from unittest.mock import MagicMock
+
+    # We don't actually call any handlers here, just emit the schemas.
+    toolkit = Toolkit(MagicMock())
+    schema = toolkit.as_json_schema()
+    if output:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(schema, indent=2), encoding="utf-8")
+        if json_output:
+            print_json({"output": str(output), "tools": len(schema)})
+            return
+        typer.echo(f"Wrote {len(schema)} tools to {output}")
+    else:
+        print_json(schema)
+
+
+@app.command("list-tools", help="List the names + descriptions of every agent tool.")
+def list_tools(
+    json_output: Annotated[
+        bool,
+        typer.Option(
+            "--json",
+            help="Print every tool as JSON (full description, role, cost in micro-USD).",
+        ),
+    ] = False,
+) -> None:
+    from pictograph.agents import REGISTRY
+
+    if json_output:
+        print_json(
+            [
+                {
+                    "name": t.name,
+                    "description": t.description,
+                    "required_role": t.required_role,
+                    "cost_micro_usd": t.cost_micro_usd,
+                    "idempotent": t.idempotent,
+                }
+                for t in REGISTRY
+            ]
+        )
+        return
+    rows = [
+        {
+            "name": t.name,
+            "role": t.required_role,
+            "cost (USD)": f"${t.cost_micro_usd / 1_000_000:.4f}",
+            "idempotent": t.idempotent,
+            "description": (t.description[:80] + "…" if len(t.description) > 80 else t.description),
+        }
+        for t in REGISTRY
+    ]
+    print_table(rows, title=f"Agent tools ({len(rows)})")
