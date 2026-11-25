@@ -1,0 +1,46 @@
+Pictograph SDK - anomaly-detection inference definitions derived from anomalib
+==============================================================================
+
+This directory contains source code derived from anomalib, redistributed under the
+Apache License, Version 2.0. The full licence text is in ./LICENSE.
+
+Origin
+------
+    Project:  anomalib (Anomaly Detection Library)
+    Release:  2.7.1 (PyPI, 2026-11-17)
+    Upstream: https://github.com/open-edge-platform/anomalib
+    Copyright (C) 2020-2026 Intel Corporation.
+    Licensed under the Apache License, Version 2.0.
+
+That release is the one the Pictograph training pipeline pins: the weights we
+publish were trained by it. Its source distribution is retained in Pictograph's
+internal dependency mirror, so these files can be re-diffed against it.
+
+WHAT IS HERE, AND WHAT WAS CHANGED
+----------------------------------
+Only the inference paths, extracted and modified (Apache-2.0 section 4(b)): each
+derived file carries anomalib's copyright header and a "Modified by Pictograph"
+notice stating what changed.
+
+    patchcore.py      from models/image/patchcore/torch_model.py (PatchcoreModel's
+                      eval path: embedding, euclidean_dist, nearest neighbours,
+                      compute_anomaly_score), models/image/patchcore/anomaly_map.py
+                      (AnomalyMapGenerator) and models/components/filters/blur.py
+                      (GaussianBlur2d). The timm feature extractor is replaced by a
+                      torchvision ResNet trunk with the same layout and parameter
+                      names; ImageNet normalization (anomalib's pre-processor) runs
+                      inside the module; the training path, the chunked search and
+                      the tiler are removed.
+
+    efficient_ad.py   from models/image/efficient_ad/torch_model.py: the patch
+                      description networks, the autoencoder (unchanged, minus the
+                      stateless dropout layers) and EfficientAdModel's eval path with
+                      its quantile normalization. The losses, the random augmentation
+                      and the "statistic set" branches are removed; the statistics
+                      are plain buffers.
+
+    __init__.py       Pictograph original (the builder and the metadata contract).
+
+Not here: anomalib's Lightning modules, data modules, CLI, metrics, post-processor
+(the decoders apply its normalization arithmetic themselves), visualization and
+every other model.
